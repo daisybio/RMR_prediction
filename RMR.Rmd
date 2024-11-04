@@ -1,0 +1,710 @@
+---
+title: "RMR Prediction"
+author: "Quirin Manz"
+date: "`r Sys.Date()`"
+output: html_document
+---
+
+# RMR Prediction
+
+## Load Data
+
+### Load Enable Data
+
+```{r, load-enable}
+require(readxl)
+require(tidytable)
+conflicted::conflict_prefer_all('tidytable', quiet = TRUE)
+data_foler <- "data"
+# load enable data
+enable_data <- read_xlsx(file.path(data_foler, "enable_Datensatz_RMR._Erwachsene 1.xlsx"), skip = 2, na=c('NA', 'N/A', ''))
+# fix compound values
+compounds <- c(
+  "acetic acid a", "butyric acid a", "propionic acid a",
+  "2-Methylbutyrate a", "hexanoic acid c", "Isobutyrate a",
+  "Isovalerate a", "pentanoic acid a",
+  "4-Methylvaleric acid a", "Lactic acid a"
+)
+# for all columns that have a comma in their name, replace commas in the column with a dot
+for (column_name in names(enable_data)) {
+  if (is.character(enable_data[[column_name]])) {
+    enable_data[[column_name]] <-
+      sub(",", ".", enable_data[[column_name]], fixed = TRUE)
+    if (column_name %in% compounds) {
+      # replace "<0" with 0
+      enable_data[[column_name]] <-
+        ifelse(enable_data[[column_name]] == "<0" |
+                 enable_data[[column_name]] == "< 0", 0, enable_data[[column_name]])
+    }
+  }
+}
+
+data_csv <- file.path(data_foler, 'enable_data.tsv')
+fwrite(enable_data, file = data_csv)
+enable_data <- fread(data_csv, stringsAsFactors = TRUE, na=c('NA', 'N/A', ''))
+# remove unnecessary column:
+if(all(enable_data[, `Probanden-ID` == Label]))
+  enable_data[, `Probanden-ID` := NULL]
+```
+
+### Load Microbiome Data
+
+```{r, load-micro}
+# load microbiome mapping
+microbiome_mapping <- data.table::setDT(read_xlsx(file.path(data_foler, "mapping_file 1.xlsx")))
+microbiome_mapping[, sample_clean := data.table::tstrsplit(".", x = `#SampleID`, fixed = TRUE, keep = 2)]
+# check uniqueness
+stopifnot(!any(microbiome_mapping[, duplicated(sample_clean)]))
+
+# load microbiome data
+microbiome_data <- fread(file.path(data_foler, "tax.summary.all 1.tab"))
+stripped_names <- unlist(data.table::tstrsplit(".", x = names(microbiome_data), fixed = TRUE, keep = 2))
+# check uniqueness
+stopifnot(!any(duplicated(stripped_names)))
+# clean names
+names(microbiome_data) <- stripped_names
+# get taxa names
+taxa_names <- microbiome_data[, V1]
+# transpose data
+microbiome_data <- microbiome_data |> data.table::transpose(keep.names = "sample_clean", make.names = "V1")
+# merge microbiome data with mapping
+microbiome_data[microbiome_mapping, on=.(sample_clean), c("Label", "Cohort"):=.(Code, as.character(Cohort))]
+# merge with enable data
+enable_data[microbiome_data, on=.(Label), (c(taxa_names, "Cohort")) := mget(c(taxa_names, "Cohort"))]
+# create field for first letter of label, i.e., categorical Age and Site
+enable_data[, Label_group:=substr(Label, 1, 1)]
+
+```
+
+```{r, alpha-diversity}
+# diversity columns
+diversity_columns <- c("Shannon.effective", "Simpson.effective")
+# load diversity data
+diversity_data <- fread('data/Final table.tab', stringsAsFactors=TRUE) |> data.table::setnames(old='V1', new="Label") |> select(Label, all_of(diversity_columns))
+
+enable_data[diversity_data, on=.(Label), (c(diversity_columns)) := mget(diversity_columns)]
+```
+
+```{r, load-column-groups}
+# groups for taxa
+taxa_group <-
+  c(
+    k = 'kingdom',
+    p = 'phylum',
+    c = 'class',
+    o = 'order',
+    f = 'family',
+    g = 'genus'
+  )[data.table::tstrsplit(taxa_names,
+                          split = '__',
+                          keep = 1,
+                          fixed = TRUE)[[1]]]
+# match the columns to certain groups
+column_groups <- rbind(data.table::data.table(column = 'Label_group', group = "General information"),
+                       fread(file.path(data_foler, 'column_groups.tsv')),
+                       data.table::data.table(column = taxa_names, group = paste("microbiome", taxa_group)),
+                       data.table::data.table(column = diversity_columns, group = paste("microbiome diversity")))
+column_groups[, group:=as.factor(group)]
+
+# set general response variable
+response_variable <- "RMR.KJ"
+# define grouping column
+grouping_column <- "Label_group"
+# get other labelling columns
+other_labelling_columns <- c("Label", "Site", "Cohort", "Datum_V1")
+# set the predictor of the established model
+basic_predictors <- c("SEX", "Alter, Jahre", "FETTMASSE_SECA, kg", "FFM_SECA,kg")
+# define microbial predictors (genus level)
+genus_predictors <- column_groups[group == 'microbiome genus', column]
+# # other microbial columns
+# other_microbial_columns <- setdiff(taxa_names, microbial_predictors)
+# define the general predictors
+general_predictors <- setdiff(names(enable_data), c(response_variable, grouping_column, other_labelling_columns, taxa_names))
+```
+
+
+<!-- ### Make some plots and statistics -->
+
+<!-- ```{r, plot-statistics, echo=FALSE, eval=FALSE} -->
+<!-- library(shiny) -->
+<!-- library(ggplot2) -->
+
+<!-- data <- enable_data -->
+
+<!-- # Launch the Shiny app -->
+<!-- shinyApp( -->
+<!--   ui = fluidPage( -->
+<!--     titlePanel("Interactive Plotting with Shiny"), -->
+<!--     sidebarLayout( -->
+<!--       sidebarPanel( -->
+<!--         selectInput("plotType", "Select Plot Type:", -->
+<!--                     choices = c("Scatterplot", "Histogram", "Boxplot")), -->
+<!--         selectInput("xvar", "X-axis Variable:", -->
+<!--                     choices = names(data)), -->
+<!--         uiOutput("yvar_ui"), -->
+<!--         selectInput("colorVar", "Color By (optional):", -->
+<!--                     choices = c("None", names(data)), selected = "None"), -->
+<!--         selectInput("facetVar", "Facet By (optional):", -->
+<!--                     choices = c("None", names(data)), selected = "None") -->
+<!--       ), -->
+<!--       mainPanel( -->
+<!--         plotOutput("plot") -->
+<!--       ) -->
+<!--     ) -->
+<!--   ), -->
+
+<!--   server = function(input, output, session) { -->
+
+<!--     # Dynamically generate Y-axis selector for applicable plot types -->
+<!--     output$yvar_ui <- renderUI({ -->
+<!--       if(input$plotType %in% c("Scatterplot", "Boxplot")) { -->
+<!--         selectInput("yvar", "Y-axis Variable:", -->
+<!--                     choices = names(data)) -->
+<!--       } -->
+<!--     }) -->
+
+<!--     output$plot <- renderPlot({ -->
+<!--       req(input$xvar) -->
+
+<!--       plot_data <- data -->
+
+<!--       # Initialize ggplot with aes mapping -->
+<!--       p <- ggplot(plot_data) -->
+
+<!--       # Base aesthetics -->
+<!--       base_aes <- aes(x = .data[[input$xvar]]) -->
+
+<!--       # Add Y variable for applicable plot types -->
+<!--       if(input$plotType %in% c("Scatterplot", "Boxplot")) { -->
+<!--         req(input$yvar) -->
+<!--         base_aes$y <- plot_data[[input$yvar]] -->
+<!--       } -->
+
+<!--       # Add Color variable if selected -->
+<!--       if(input$colorVar != "None") { -->
+<!--         base_aes$color <- plot_data[[input$colorVar]] -->
+<!--         base_aes$fill <- plot_data[[input$colorVar]]  # For histogram fill -->
+<!--       } -->
+
+<!--       # Start building the plot with base aesthetics -->
+<!--       p <- p + base_aes -->
+
+<!--       # Add the appropriate geom based on plot type -->
+<!--       if(input$plotType == "Scatterplot") { -->
+<!--         p <- p + geom_point() -->
+<!--       } else if(input$plotType == "Histogram") { -->
+<!--         p <- p + geom_histogram(bins = 30) -->
+<!--       } else if(input$plotType == "Boxplot") { -->
+<!--         p <- p + geom_boxplot() -->
+<!--       } -->
+
+<!--       # Apply faceting if selected -->
+<!--       if(input$facetVar != "None") { -->
+<!--         p <- p + facet_wrap(vars(.data[[input$facetVar]])) -->
+<!--       } -->
+
+<!--       # Render the plot -->
+<!--       print(p) -->
+<!--     }) -->
+<!--   } -->
+<!-- ) -->
+<!-- ``` -->
+
+## Build some basic models
+
+
+```{r, prepare-models}
+library(tidymodels)
+tidymodels_prefer()
+ggplot2::theme_set(ggplot2::theme_bw())
+
+set.seed(1)
+# split the data by Site to have a test sets
+enable_split <- group_initial_split(enable_data, group = "Site")
+test_data <- enable_split |> testing()
+train_data <- enable_split |> training()
+# ensure that Site == "freising" in the whole train_data
+stopifnot(all(train_data$Site == 'freising'))
+
+# Number of samples that have at least one NA value
+train_data |>
+  filter_all(any_vars(is.na(.))) |>
+  nrow()
+
+# # filter such that all samples have no NA values
+# full_train_data <- train_data |>
+#   filter_all(all_vars(!is.na(.)))
+
+# set number of folds and also register parallel processing
+nfolds <- 5
+nrepeats <- 10
+require(doMC)
+doMC::registerDoMC(cores = nfolds*nrepeats)
+
+set.seed(1102)
+repeated_cv_split <- rsample::vfold_cv(train_data, v = nfolds, repeats = nrepeats)
+grouped_split <- rsample::group_vfold_cv(train_data, all_of(grouping_column), v = 3)
+```
+
+
+```{r, configure-models}
+# create recipes
+general_recipe <-
+  recipe(train_data) |>
+  update_role(all_of(general_predictors), new_role = "predictor") |>
+  update_role(all_of(response_variable), new_role = "outcome") |>
+  update_role(all_of(other_labelling_columns), new_role = "labels") |>
+  update_role(all_of(grouping_column), new_role = "splitting indicator") |>
+  update_role(all_of(taxa_names), new_role = "microbiome") |>
+  step_normalize(all_numeric_predictors()) |> 
+  step_impute_mean(all_numeric_predictors()) |>
+  step_dummy(all_nominal_predictors()) |>
+  step_zv(all_predictors())
+
+genus_recipe <- general_recipe |>
+  update_role(all_of(genus_predictors), new_role = "predictor")
+
+basic_recipe <- general_recipe |>
+  update_role(all_of(general_predictors), new_role = "old_predictor") |>
+  update_role(all_of(basic_predictors), new_role = "predictor")
+  
+# recipe list
+recipe_list <- list(basic = basic_recipe,
+                    general = general_recipe,
+                    genus = genus_recipe)
+
+main_metric <- "rsq"
+metrics <- metric_set(rsq, rmse, mae, ccc)
+
+# linear model
+lm_model <- 
+  linear_reg() |> 
+  set_engine("lm")
+
+# elastic net model
+elnet_model <- 
+  linear_reg(penalty = tune(), mixture = tune()) |> 
+  set_engine("glmnet")
+
+# lasso model
+lasso_model <- 
+  linear_reg(penalty = tune(), mixture = 1) |> 
+  set_engine("glmnet")
+
+# random forest
+rf_model <-
+  rand_forest(trees = tune(), min_n = tune(), mtry = tune()) |> 
+  set_engine("ranger", verbose = TRUE) |> 
+  set_mode("regression")
+
+# neural network
+nnet_model <- 
+   mlp(hidden_units = tune(), penalty = tune(), epochs = tune()) |> 
+   set_engine("nnet") |> 
+   set_mode("regression")
+
+# model list
+model_list <- list(linear = lm_model, 
+                   elnet = elnet_model,
+                   lasso = lasso_model, 
+                   RF = rf_model, 
+                   nnet = nnet_model)
+```
+
+```{r, train-models}
+# set the workflows
+workflows <- workflow_set(
+      preproc = recipe_list, 
+      models = model_list)
+
+# set the parameters for the elnet
+elnet_params <-
+  elnet_model |>
+  extract_parameter_set_dials() |>
+  update(penalty = penalty(range=c(-10, 6)))
+
+for (this_wflow_id in workflows$wflow_id[endsWith(workflows$wflow_id, suffix = 'elnet')]){
+  workflows <- workflows |>
+   option_add(param_info = elnet_params, id = this_wflow_id)
+}
+
+# set the parameters for the lasso
+lasso_params <-
+  lasso_model |>
+  extract_parameter_set_dials() |>
+  update(penalty = penalty(range=c(-10, 6)))
+
+for (this_wflow_id in workflows$wflow_id[endsWith(workflows$wflow_id, suffix = 'lasso')]){
+  workflows <- workflows |>
+   option_add(param_info = lasso_params, id = this_wflow_id)
+}
+
+# set the parameters for the RF
+rf_params <-
+  rf_model |>
+  extract_parameter_set_dials() 
+ 
+# iterate over the RF wflow_ids and generate the mtry parameter dynamically
+for (this_wflow_id in workflows$wflow_id[endsWith(workflows$wflow_id, suffix = 'RF')]){
+  # set the parameters for the RF in question
+  rf_params <-
+    rf_params |> 
+    update(mtry = mtry(c(
+      1, sum(recipe_list[[sub("_.*", "", this_wflow_id)]]$var_info$role == "predictor")
+    )))  
+  workflows <-
+    workflows |> option_add(param_info = rf_params, id = this_wflow_id)
+}
+
+# set the parameters for the NN
+nnet_params <- 
+   nnet_model |> 
+   extract_parameter_set_dials() |> 
+   update(hidden_units = hidden_units(c(1, 27))) |>
+   update(penalty = penalty(range=c(-10, 6)))
+
+for (this_wflow_id in workflows$wflow_id[endsWith(workflows$wflow_id, suffix = 'nnet')]){
+  workflows <- workflows |>
+   option_add(param_info = nnet_params, id = this_wflow_id)
+}
+
+# define the grid
+grid_ctrl <-
+   control_grid(
+      save_pred = TRUE,
+      save_workflow = TRUE,
+      verbose = TRUE
+   )
+```
+
+
+
+```{r, train-models}
+# train the models
+if (! file.exists("cv_results.rds")) {
+  cv_results <- lapply(list(grouped_split, repeated_cv_split), 
+         function(this_split)
+           workflows |>
+             workflow_map(
+                seed = 1503,
+                resamples = this_split,
+                grid = 50,
+                control = grid_ctrl,
+                verbose = TRUE,
+                metrics = metrics
+             )
+         )
+  names(cv_results) <- c("grouped", "repeated") 
+  saveRDS(cv_results, "cv_results.rds")
+} else {
+  cv_results <- readRDS("cv_results.rds")
+}
+```
+
+```{r, plot-results, fig.width=10, fig.height=10}
+best_models_per_split <- lapply(names(cv_results), function(this_split){
+  this_result <- cv_results[[this_split]]
+  print(autoplot(this_result, type="wflow_id") + labs(title = this_split))
+  
+  cv_result_dt <- this_result |> rank_results(rank_metric = main_metric, select_best = TRUE) |> data.table::setDT()
+  cv_result_dt[, c('Features', 'Model Name'):=data.table::tstrsplit(wflow_id, "_", fixed = TRUE)]
+  cv_result_dt[, rank:=factor(rank, levels=sort(unique(rank)))]
+  print(ggplot(cv_result_dt, aes(x = rank, y = mean, color = Features)) +
+    geom_point() +
+    geom_errorbar(aes(ymin = mean - std_err, ymax = mean + std_err)) +
+    facet_wrap(.metric~reorder(`Model Name`, rank), scales = 'free') + labs(title = this_split))
+  
+  all_cv_results <- this_result |>
+    mutate(metrics = map(result, collect_metrics))  |>
+    tidyr::unnest(cols = metrics) |>
+    data.table::setDT()
+  all_cv_results[, c('Features', 'Model Name'):=data.table::tstrsplit(wflow_id, "_", fixed = TRUE)]
+  
+  best_models <- lapply(names(model_list)[-1], function(model_name){
+    best_models <- all_cv_results |> 
+      subset(`Model Name` == model_name & .metric == main_metric) |> 
+      mutate(max_rsq = max(mean, na.rm=TRUE)) |> 
+      filter(mean >= max_rsq - std_err)
+    if (model_name == "elnet") {
+      best_models <- best_models |> arrange(desc(penalty), mixture)
+    } else if ("lasso") {
+      best_models <- best_models |> arrange(desc(penalty))
+    } else if ('RF') {
+      best_models <- best_models |> arrange(trees, mtry, desc(min_n))
+    } else if ("nnet") {
+      best_models <- best_models |> arrange(epochs, hidden_units, desc(penalty))
+    } else stop("Unknown model type")
+    best_row <- best_models |> 
+      slice_head(n = 1)
+    best_model <-
+      this_result |>
+      extract_workflow(best_row$wflow_id) |>
+      finalize_workflow(best_row) |>
+      fit(data = train_data)
+    best_model
+  })
+  names(best_models) <- names(model_list)[-1]
+  best_models
+})
+names(best_models_per_split) <- names(cv_results)
+```
+
+```{r, plot-specific-results, eval=FALSE}
+# now plot and gather best model for each workflow
+wflow_ids <- workflows$wflow_id
+wflow_ids <- wflow_ids[!endsWith(wflow_ids, "_linear")]
+final_models <- sapply(wflow_ids, function(this_wflow_id) {
+  wflow_results <- train_results |> 
+    extract_workflow_set_result(this_wflow_id)
+  print(autoplot(wflow_results) + labs(title=this_wflow_id))
+  specs <- workflows |> extract_spec_parsnip(this_wflow_id)
+  tuning_params <- specs |> extract_parameter_set_dials() |> pull(name)
+  if (inherits(specs, "linear_reg")) {
+    if (all(c("penalty", "mixture") %in% tuning_params))
+      best_model <- wflow_results |> select_by_one_std_err(metric = main_metric, desc(penalty), mixture)
+    else if ("penalty" %in% tuning_params)
+      best_model <- wflow_results |> select_by_one_std_err(metric = main_metric, desc(penalty))
+    else if ("mixture" %in% tuning_params)
+      best_model <- wflow_results |> select_by_one_std_err(metric = main_metric, mixture)
+  } else if (inherits(specs, "rand_forest")) {
+    best_model <- wflow_results |> select_by_one_std_err(metric = main_metric, trees, mtry, desc(min_n))
+  } else if (inherits(specs, "mlp")) {
+    best_model <- wflow_results |> select_by_one_std_err(metric = main_metric, epochs, hidden_units, desc(penalty))
+  }
+  train_results |>
+    extract_workflow(this_wflow_id) |>
+    finalize_workflow(best_model) |>
+    fit(data = train_data)
+}, simplify = FALSE)
+```
+
+```{r}
+# Problem: this is on the standardized response, while the final model will be on the original response?
+final_models$genus_elnet |> extract_fit_parsnip() |> tidy() |> subset(estimate != 0) |> mutate(abs_estimate = abs(estimate)) |> arrange(desc(abs_estimate)) |> select(-abs_estimate)
+final_models$genus_lasso |> extract_fit_parsnip() |> tidy() |> subset(estimate != 0) |> mutate(abs_estimate = abs(estimate)) |> arrange(desc(abs_estimate)) |> select(-abs_estimate)
+```
+
+
+```{r, glmnet-example}
+library(glmnet)
+library(sparsegl)
+
+
+# prepare x and y 
+x <- makeX(full_train_data |> select(all_of(c(general_predictors, genus_predictors))) |> mutate(across(
+      where(is.numeric), scale
+    )), sparse = TRUE)
+y <- full_train_data |> pull(response_variable)
+
+# clean predictor names
+clean_predictors <- gsub("^`|`$", "", colnames(x))
+data.table::setkey(column_groups, 'column')
+mapping_dt <- column_groups[clean_predictors]
+na_mapping <-
+  sapply(mapping_dt[is.na(group), column], function(pred)
+    column_groups[column_groups$column[startsWith(pred, column_groups$column)], group])
+mapping_dt[is.na(group), group := na_mapping[column]]
+mapping_dt[, group_id := as.integer(factor(group))]
+
+repeat_ids <- repeated_cv_split$id |> unique()
+grouping_weights <- seq(.05, .95, by = .1)
+
+# lasso test:
+cvfits <- #pbmcapply::pbmc
+  lapply(repeat_ids, function(repeat_id) {
+  # Filter the splits for the specified repeat
+  repeat_splits <- repeated_cv_split |> subset(id == repeat_id)
+  
+  # Initialize a fold ID vector (length = number of rows in the data)
+  fold_ids <- integer(full_train_data |> nrow())
+  
+  # Assign fold numbers to each observation based on assessment sets
+  for (i in seq_along(repeat_splits$splits)) {
+    fold <- repeat_splits$splits[[i]]
+    assessment_indices <- tidy(fold) |> subset(Data == "Assessment") |> pull(Row)
+    fold_ids[assessment_indices] <- i  # Assign fold number `i` to assessment indices
+  }
+  stopifnot(all(fold_ids>0))
+  # compute sgl
+  sgls <- pbmcapply::pbmclapply(grouping_weights, function(grouping_weight) {
+    sgl <- cv.sparsegl(
+      x = x,
+      y = y,
+      group = mapping_dt[, group_id],
+      asparse = grouping_weight,
+      foldid = fold_ids
+    )
+  }, mc.cores = length(grouping_weights))
+  names(sgls) <- grouping_weights
+  best_sgls <-
+    data.table::rbindlist(sapply(sgls, function(x)
+      summary(x)$table["lambda.1se", ], simplify = FALSE),
+      idcol = 'grouping_weight')
+  best_row <- best_sgls |>
+    mutate(min_cvm = min(cvm)) |>
+    filter(cvm <= min_cvm + cvsd) |>
+    arrange(nnzero, active_grps, desc(lambda)) |>
+    slice_head(n = 1)
+  # sgl_plot <- plot(sgl$sparsegl.fit, y_axis = "group", x_axis = "lambda", add_legend = TRUE)
+  # sgl_plot$data <- sgl_plot$data |>
+  #   mutate(group = setNames(mapping_dt$group, paste0("group", mapping_dt$group_id))[group])
+  # print(sgl_plot)
+  # compute lasso
+  lasso <-
+    cv.glmnet(
+      x = x,
+      y = y,
+      alpha = 1,
+      family = "gaussian",
+      foldid = fold_ids
+    )
+  
+  # print(plot(cvfit))
+  list(lasso = lasso, sgl = sgls[[best_row$grouping_weight]])
+}) #, mc.cores = length(repeat_ids))
+names(cvfits) <- repeat_ids
+sapply(cvfits, plot)
+nonzero_coefs <- lapply(cvfits, function(cvfit) {
+  # get the nonzero coefficients
+  coefs <- coef(cvfit, s = "lambda.1se")
+  nonzero_coefs <- coefs[coefs[, 1] != 0, ]
+  sort(nonzero_coefs, decreasing = TRUE)
+  names(nonzero_coefs)
+  })
+names(nonzero_coefs) <- repeat_ids
+```
+
+```{r, plot-coefs}
+transposed_df <- stack(nonzero_coefs)
+# Split the data by feature name, grouping all indices by feature
+transposed_list <- split(transposed_df$ind, transposed_df$values)
+
+require(UpSetR)
+upset(fromList(transposed_list), nsets=length(transposed_list), order.by = "freq", nintersects = NA)
+```
+
+
+```{r, fit-lm}
+new_predictors <- Reduce(intersect, nonzero_coefs) # names(nonzero_coefs)[names(nonzero_coefs) != "(Intercept)"]
+new_predictors <- new_predictors[new_predictors != "(Intercept)"]
+linear_model <- lm(as.formula(paste(response_variable, "~",  paste(new_predictors, collapse= " + "))), 
+   data = full_train_data |> select(all_of(general_predictors)) |> mutate(across(where(is.numeric), scale)) |> cbind(full_train_data |> select(all_of(response_variable))))
+summary(linear_model)
+```
+
+
+```{r, tune-models, eval=FALSE}
+library(finetune)
+
+# define the sa control
+sa_ctrl <-
+   control_sim_anneal(
+      save_pred = TRUE,
+      save_workflow = TRUE,
+      verbose = TRUE,
+      no_improve = 10L
+   )
+
+# set the grid search
+sa_results <-
+   workflows |>
+   option_add(id = "general_lasso", initial = grid_results |> extract_workflow_set_result("general_lasso")) |>
+   option_add(id = "general_RF", initial = grid_results |> extract_workflow_set_result("general_RF")) |>
+   option_add(id = "general_neural_network", initial = grid_results |> extract_workflow_set_result("general_neural_network")) |>
+   workflow_map(
+      fn = "tune_sim_anneal",
+      seed = 1503,
+      iter = 50,
+      resamples = repeated_cv_split,
+      control = sa_ctrl,
+      verbose = TRUE,
+      metrics = metrics
+   )
+
+train_results <- sa_results
+```
+
+```{r, eval=FALSE}
+library(finetune)
+
+race_ctrl <-
+   control_race(
+      save_pred = TRUE,
+      save_workflow = TRUE,
+      verbose = TRUE
+   )
+
+race_results <-
+   workflows |>
+   workflow_map(
+      "tune_race_anova",
+      seed = 1503,
+      resamples = repeated_cv_split,
+      grid = 25,
+      control = race_ctrl,
+      verbose = TRUE
+   )
+```
+
+```{r, train-rf, eval=FALSE}
+# Use tidymodels to build machine learning models predicting RMR.KJ to build a linear model, an elastic net model and a random forest on the repeated_cv_split. Use grid_search for the appropriate parameters and make nice plots to show performance
+rf_wflow <- 
+  workflow() |>
+  add_model(rf_model) |>
+  add_recipe(general_recipe)
+
+rf_params <-
+  rf_wflow |>
+  extract_parameter_set_dials() |>
+  update(mtry = mtry(c(1, sum(
+    rf_wflow[["pre"]][["actions"]][["recipe"]][["recipe"]][["var_info"]][["role"]] == "predictor"
+  ))))
+
+
+start_grid <- 
+  rf_params |>
+  grid_regular(levels = 4)
+
+rf_grid <- 
+  rf_wflow |> 
+  tune_grid(
+    resamples = repeated_cv_split,
+    grid = start_grid,
+    metrics = metrics,
+    control = control_grid(verbose = TRUE, parallel_over = "everything")
+  )
+autoplot(rf_grid)
+select_by_one_std_err(rf_grid, metric = main_metric, trees, mtry, desc(min_n))
+
+rf_bo <-
+  rf_wflow |>
+  tune_bayes(
+    resamples = repeated_cv_split,
+    metrics = metrics,
+    initial = rf_grid,
+    param_info = rf_params,
+    iter = 50,
+    control = control_bayes(verbose = TRUE, parallel_over = "everything")
+  )
+autoplot(rf_bo, type = "performance")
+autoplot(rf_bo, type = "parameters")
+select_by_one_std_err(rf_bo, metric = main_metric, trees, mtry, desc(min_n))
+
+
+rf_sa <-
+  rf_wflow |>
+  finetune::tune_sim_anneal(
+    resamples = repeated_cv_split,
+    metrics = metrics,
+    initial = rf_grid,
+    param_info = rf_params,
+    iter = 50,
+    control = finetune::control_sim_anneal(verbose = TRUE, no_improve = 10L, parallel_over = "everything")
+  )
+autoplot(rf_sa, type = "performance")
+autoplot(rf_sa, type = "parameters")
+select_by_one_std_err(rf_sa, metric = main_metric, trees, mtry, desc(min_n))
+
+# show the metrics where mtry, trees and min_n are in the standard error of the best model
+collect_metrics(rf_sa) |> subset(.config == select_by_one_std_err(rf_sa, metric = 'rsq', trees, mtry, desc(min_n))$.config)
+```
