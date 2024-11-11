@@ -5,11 +5,9 @@ date: "`r Sys.Date()`"
 output: html_document
 ---
 
-# RMR Prediction
+# Load Data
 
-## Load Data
-
-### Load Enable Data
+## Load Enable Data
 
 ```{r, load-enable}
 require(readxl)
@@ -44,10 +42,10 @@ fwrite(enable_data, file = data_csv)
 enable_data <- fread(data_csv, stringsAsFactors = TRUE, na=c('NA', 'N/A', ''))
 # remove unnecessary column:
 if(all(enable_data[, `Probanden-ID` == Label]))
-  enable_data[, `Probanden-ID` := NULL]
+  invisible(enable_data[, `Probanden-ID` := NULL])
 ```
 
-### Load Microbiome Data
+## Load Microbiome Data
 
 ```{r, load-micro}
 # load microbiome mapping
@@ -70,11 +68,13 @@ microbiome_data <- microbiome_data |> data.table::transpose(keep.names = "sample
 # merge microbiome data with mapping
 microbiome_data[microbiome_mapping, on=.(sample_clean), c("Label", "Cohort"):=.(Code, as.character(Cohort))]
 # merge with enable data
-enable_data[microbiome_data, on=.(Label), (c(taxa_names, "Cohort")) := mget(c(taxa_names, "Cohort"))]
+invisible(enable_data[microbiome_data, on=.(Label), (c(taxa_names, "Cohort")) := mget(c(taxa_names, "Cohort"))])
 # create field for first letter of label, i.e., categorical Age and Site
-enable_data[, Label_group:=substr(Label, 1, 1)]
+invisible(enable_data[, Label_group:=substr(Label, 1, 1)])
 
 ```
+
+### Add Alpha Diversity
 
 ```{r, alpha-diversity}
 # diversity columns
@@ -82,8 +82,10 @@ diversity_columns <- c("Shannon.effective", "Simpson.effective")
 # load diversity data
 diversity_data <- fread('data/Final table.tab', stringsAsFactors=TRUE) |> data.table::setnames(old='V1', new="Label") |> select(Label, all_of(diversity_columns))
 
-enable_data[diversity_data, on=.(Label), (c(diversity_columns)) := mget(diversity_columns)]
+invisible(enable_data[diversity_data, on=.(Label), (c(diversity_columns)) := mget(diversity_columns)])
 ```
+
+## Set Variable Groups
 
 ```{r, load-column-groups}
 # groups for taxa
@@ -114,122 +116,41 @@ grouping_column <- "Label_group"
 other_labelling_columns <- c("Label", "Site", "Cohort", "Datum_V1")
 # set the predictor of the established model
 basic_predictors <- c("SEX", "Alter, Jahre", "FETTMASSE_SECA, kg", "FFM_SECA,kg")
-# define microbial predictors (genus level)
-genus_predictors <- column_groups[group == 'microbiome genus', column]
+# define microbial predictors (family level)
+microbiome_predictors <- column_groups[group == 'microbiome family', column]
 # # other microbial columns
 # other_microbial_columns <- setdiff(taxa_names, microbial_predictors)
 # define the general predictors
 general_predictors <- setdiff(names(enable_data), c(response_variable, grouping_column, other_labelling_columns, taxa_names))
 ```
 
+# Build Models
 
-<!-- ### Make some plots and statistics -->
-
-<!-- ```{r, plot-statistics, echo=FALSE, eval=FALSE} -->
-<!-- library(shiny) -->
-<!-- library(ggplot2) -->
-
-<!-- data <- enable_data -->
-
-<!-- # Launch the Shiny app -->
-<!-- shinyApp( -->
-<!--   ui = fluidPage( -->
-<!--     titlePanel("Interactive Plotting with Shiny"), -->
-<!--     sidebarLayout( -->
-<!--       sidebarPanel( -->
-<!--         selectInput("plotType", "Select Plot Type:", -->
-<!--                     choices = c("Scatterplot", "Histogram", "Boxplot")), -->
-<!--         selectInput("xvar", "X-axis Variable:", -->
-<!--                     choices = names(data)), -->
-<!--         uiOutput("yvar_ui"), -->
-<!--         selectInput("colorVar", "Color By (optional):", -->
-<!--                     choices = c("None", names(data)), selected = "None"), -->
-<!--         selectInput("facetVar", "Facet By (optional):", -->
-<!--                     choices = c("None", names(data)), selected = "None") -->
-<!--       ), -->
-<!--       mainPanel( -->
-<!--         plotOutput("plot") -->
-<!--       ) -->
-<!--     ) -->
-<!--   ), -->
-
-<!--   server = function(input, output, session) { -->
-
-<!--     # Dynamically generate Y-axis selector for applicable plot types -->
-<!--     output$yvar_ui <- renderUI({ -->
-<!--       if(input$plotType %in% c("Scatterplot", "Boxplot")) { -->
-<!--         selectInput("yvar", "Y-axis Variable:", -->
-<!--                     choices = names(data)) -->
-<!--       } -->
-<!--     }) -->
-
-<!--     output$plot <- renderPlot({ -->
-<!--       req(input$xvar) -->
-
-<!--       plot_data <- data -->
-
-<!--       # Initialize ggplot with aes mapping -->
-<!--       p <- ggplot(plot_data) -->
-
-<!--       # Base aesthetics -->
-<!--       base_aes <- aes(x = .data[[input$xvar]]) -->
-
-<!--       # Add Y variable for applicable plot types -->
-<!--       if(input$plotType %in% c("Scatterplot", "Boxplot")) { -->
-<!--         req(input$yvar) -->
-<!--         base_aes$y <- plot_data[[input$yvar]] -->
-<!--       } -->
-
-<!--       # Add Color variable if selected -->
-<!--       if(input$colorVar != "None") { -->
-<!--         base_aes$color <- plot_data[[input$colorVar]] -->
-<!--         base_aes$fill <- plot_data[[input$colorVar]]  # For histogram fill -->
-<!--       } -->
-
-<!--       # Start building the plot with base aesthetics -->
-<!--       p <- p + base_aes -->
-
-<!--       # Add the appropriate geom based on plot type -->
-<!--       if(input$plotType == "Scatterplot") { -->
-<!--         p <- p + geom_point() -->
-<!--       } else if(input$plotType == "Histogram") { -->
-<!--         p <- p + geom_histogram(bins = 30) -->
-<!--       } else if(input$plotType == "Boxplot") { -->
-<!--         p <- p + geom_boxplot() -->
-<!--       } -->
-
-<!--       # Apply faceting if selected -->
-<!--       if(input$facetVar != "None") { -->
-<!--         p <- p + facet_wrap(vars(.data[[input$facetVar]])) -->
-<!--       } -->
-
-<!--       # Render the plot -->
-<!--       print(p) -->
-<!--     }) -->
-<!--   } -->
-<!-- ) -->
-<!-- ``` -->
-
-## Build some basic models
-
+## Split and Check Data
 
 ```{r, prepare-models}
-library(tidymodels)
+suppressPackageStartupMessages(library(tidymodels))
 tidymodels_prefer()
-ggplot2::theme_set(ggplot2::theme_bw())
+ggplot2::theme_set(ggplot2::theme_bw() + theme(strip.background = element_rect(fill = "white")))
 
+# number of NA responses
+message(paste("Number of NAs in response: ", enable_data |> filter(is.na(`RMR.KJ`)) |> nrow()))
+enable_data <- enable_data |> subset(!is.na(`RMR.KJ`))
+
+# set seed for reproducibility
 set.seed(1)
 # split the data by Site to have a test sets
 enable_split <- group_initial_split(enable_data, group = "Site")
 test_data <- enable_split |> testing()
 train_data <- enable_split |> training()
+
 # ensure that Site == "freising" in the whole train_data
 stopifnot(all(train_data$Site == 'freising'))
 
 # Number of samples that have at least one NA value
-train_data |>
+message(paste("Number of NAs in any variable: ", train_data |>
   filter_all(any_vars(is.na(.))) |>
-  nrow()
+  nrow()))
 
 # # filter such that all samples have no NA values
 # full_train_data <- train_data |>
@@ -238,14 +159,13 @@ train_data |>
 # set number of folds and also register parallel processing
 nfolds <- 5
 nrepeats <- 10
-require(doMC)
-doMC::registerDoMC(cores = nfolds*nrepeats)
 
 set.seed(1102)
 repeated_cv_split <- rsample::vfold_cv(train_data, v = nfolds, repeats = nrepeats)
 grouped_split <- rsample::group_vfold_cv(train_data, all_of(grouping_column), v = 3)
 ```
 
+## Configure Models
 
 ```{r, configure-models}
 # create recipes
@@ -256,25 +176,30 @@ general_recipe <-
   update_role(all_of(other_labelling_columns), new_role = "labels") |>
   update_role(all_of(grouping_column), new_role = "splitting indicator") |>
   update_role(all_of(taxa_names), new_role = "microbiome") |>
-  step_normalize(all_numeric_predictors()) |> 
   step_impute_mean(all_numeric_predictors()) |>
-  step_dummy(all_nominal_predictors()) |>
-  step_zv(all_predictors())
-
-genus_recipe <- general_recipe |>
-  update_role(all_of(genus_predictors), new_role = "predictor")
+  step_zv(all_predictors()) |>
+  step_normalize(all_numeric_predictors()) |> 
+  step_dummy(all_nominal_predictors())
 
 basic_recipe <- general_recipe |>
   update_role(all_of(general_predictors), new_role = "old_predictor") |>
   update_role(all_of(basic_predictors), new_role = "predictor")
+
+meanImpute_recipe <- general_recipe |>
+  update_role(all_of(microbiome_predictors), new_role = "predictor")
+
+# interaction_recipe <- meanImpute_recipe |>
+#   step_poly(all_numeric_predictors(), degree = 2) |>
+#   step_interact(~ all_predictors():all_predictors())
   
 # recipe list
-recipe_list <- list(basic = basic_recipe,
-                    general = general_recipe,
-                    genus = genus_recipe)
+recipe_list <- list(# basic = basic_recipe,
+                    # general = general_recipe,
+                    # interactions = interaction_recipe,
+                    meanImpute = meanImpute_recipe)
 
 main_metric <- "rsq"
-metrics <- metric_set(rsq, rmse, mae, ccc)
+my_metrics <- metric_set(rmse, ccc, rsq, mae)
 
 # linear model
 lm_model <- 
@@ -282,8 +207,8 @@ lm_model <-
   set_engine("lm")
 
 # elastic net model
-elnet_model <- 
-  linear_reg(penalty = tune(), mixture = tune()) |> 
+elnet_model <-
+  linear_reg(penalty = tune(), mixture = tune()) |>
   set_engine("glmnet")
 
 # lasso model
@@ -294,207 +219,494 @@ lasso_model <-
 # random forest
 rf_model <-
   rand_forest(trees = tune(), min_n = tune(), mtry = tune()) |> 
-  set_engine("ranger", verbose = TRUE) |> 
+  set_engine("ranger") |> 
   set_mode("regression")
 
 # neural network
 nnet_model <- 
    mlp(hidden_units = tune(), penalty = tune(), epochs = tune()) |> 
-   set_engine("nnet") |> 
+   set_engine("nnet", MaxNWts = 2600) |> 
    set_mode("regression")
 
 # model list
-model_list <- list(linear = lm_model, 
-                   elnet = elnet_model,
-                   lasso = lasso_model, 
-                   RF = rf_model, 
+model_list <- list(linear = lm_model,
+                   # elnet = elnet_model,
+                   lasso = lasso_model,
+                   RF = rf_model,
                    nnet = nnet_model)
-```
 
-```{r, train-models}
-# set the workflows
-workflows <- workflow_set(
-      preproc = recipe_list, 
-      models = model_list)
+# set the same parameters for all penalties
+penalty_range <- penalty(range=c(-10, 3))
 
 # set the parameters for the elnet
 elnet_params <-
   elnet_model |>
   extract_parameter_set_dials() |>
-  update(penalty = penalty(range=c(-10, 6)))
-
-for (this_wflow_id in workflows$wflow_id[endsWith(workflows$wflow_id, suffix = 'elnet')]){
-  workflows <- workflows |>
-   option_add(param_info = elnet_params, id = this_wflow_id)
-}
+  update(penalty = penalty_range)
 
 # set the parameters for the lasso
 lasso_params <-
   lasso_model |>
   extract_parameter_set_dials() |>
-  update(penalty = penalty(range=c(-10, 6)))
-
-for (this_wflow_id in workflows$wflow_id[endsWith(workflows$wflow_id, suffix = 'lasso')]){
-  workflows <- workflows |>
-   option_add(param_info = lasso_params, id = this_wflow_id)
-}
+  update(penalty = penalty_range)
 
 # set the parameters for the RF
 rf_params <-
   rf_model |>
   extract_parameter_set_dials() 
- 
-# iterate over the RF wflow_ids and generate the mtry parameter dynamically
-for (this_wflow_id in workflows$wflow_id[endsWith(workflows$wflow_id, suffix = 'RF')]){
-  # set the parameters for the RF in question
-  rf_params <-
-    rf_params |> 
-    update(mtry = mtry(c(
-      1, sum(recipe_list[[sub("_.*", "", this_wflow_id)]]$var_info$role == "predictor")
-    )))  
-  workflows <-
-    workflows |> option_add(param_info = rf_params, id = this_wflow_id)
-}
 
 # set the parameters for the NN
 nnet_params <- 
    nnet_model |> 
    extract_parameter_set_dials() |> 
    update(hidden_units = hidden_units(c(1, 27))) |>
-   update(penalty = penalty(range=c(-10, 6)))
+   update(penalty = penalty_range)
 
-for (this_wflow_id in workflows$wflow_id[endsWith(workflows$wflow_id, suffix = 'nnet')]){
-  workflows <- workflows |>
-   option_add(param_info = nnet_params, id = this_wflow_id)
+params_list <- list(elnet = elnet_params,
+                   lasso = lasso_params,
+                   RF = rf_params,
+                   nnet = nnet_params)
+
+```
+
+## Configure Workflows
+
+```{r, add-params}
+# set the workflows
+workflows <- workflow_set(
+      preproc = recipe_list, 
+      models = model_list)
+
+workflows <- workflows |>
+    option_add(grid = 100)
+ 
+# iterate over the RF wflow_ids and generate the mtry parameter dynamically
+for (this_wflow_id in workflows$wflow_id){
+  model_name <- data.table::tstrsplit(this_wflow_id, '_', fixed = TRUE, keep = 2)[[1]]
+  # set the parameters for the RF in question
+  params <- params_list[[model_name]]
+  if (model_name == "RF"){
+    params <- params |> 
+    update(mtry = mtry(c(
+      1, sum(recipe_list[[sub("_.*", "", this_wflow_id)]]$var_info$role == "predictor")
+    ))) }
+  workflows <- workflows |> 
+    option_add(param_info = params, id = this_wflow_id)
+  # if (!is.null(params))
+  # workflows <- workflows |>
+  #   option_add(grid = 100)#params |>
+                 # grid_space_filling(type = "uniform", size = 30), id = this_wflow_id)
+  
 }
 
+ctrl_parallel_over <- "everything"
 # define the grid
 grid_ctrl <-
    control_grid(
       save_pred = TRUE,
       save_workflow = TRUE,
-      verbose = TRUE
+      parallel_over = ctrl_parallel_over
    )
+
+bayes_ctrl <-
+    control_bayes(
+      save_pred = TRUE,
+      save_workflow = TRUE,
+      parallel_over = ctrl_parallel_over
+    )
 ```
 
-
+## Train Models
 
 ```{r, train-models}
-# train the models
-if (! file.exists("cv_results.rds")) {
-  cv_results <- lapply(list(grouped_split, repeated_cv_split), 
-         function(this_split)
-           workflows |>
-             workflow_map(
-                seed = 1503,
-                resamples = this_split,
-                grid = 50,
-                control = grid_ctrl,
-                verbose = TRUE,
-                metrics = metrics
-             )
-         )
-  names(cv_results) <- c("grouped", "repeated") 
-  saveRDS(cv_results, "cv_results.rds")
+# train or load the models, depending on availibility
+# if (! file.exists("cv_results.rds")) {
+#   # train the models
+require(doMC)
+if (ctrl_parallel_over == 'everything') {
+  doMC::registerDoMC(cores = nfolds * nrepeats)
 } else {
-  cv_results <- readRDS("cv_results.rds")
+  doMC::registerDoMC(cores = nrepeats)
 }
+  # All operating systems
+  # require(doParallel)
+  # 
+  # # Create a cluster object and then register: 
+  # cl <- makePSOCKcluster(nrepeats)
+  # registerDoParallel(cl)
+  
+  # grid_cv_result <- ifelse(file.exists("grid_cv_results.rds"), readRDS("grid_cv_results.rds"), list)
+split_list <- list(grouped = grouped_split, repeated = repeated_cv_split)
+cv_results <- lapply(names(split_list), function(this_split_name) {
+  print(this_split_name)
+  this_split <- split_list[[this_split_name]]
+  grid_result_file <-
+    file.path('fits', paste("grid", this_split_name, "results.rds", sep = "_"))
+  if (file.exists(grid_result_file)) {
+    print("loading grid results")
+    grid_results <- readRDS(grid_result_file)
+  } else {
+    print("creating grid results")
+    grid_results <- workflows |>
+      workflow_map(
+        fn = "tune_grid",
+        seed = 1503,
+        resamples = this_split,
+        control = grid_ctrl,
+        verbose = TRUE,
+        metrics = my_metrics
+      )
+    saveRDS(grid_results, grid_result_file)
+  }
+  return(grid_results)
+  bayes_result_file <-
+    file.path('fits', paste("bayes", this_split_name, "results.rds", sep = "_"))
+  if (file.exists(bayes_result_file)) {
+    print("loading bayes results")
+    bayes_results <- readRDS(bayes_result_file)
+  } else {
+    print("creating bayes results")
+    wf_with_initial <- workflows |>
+      option_remove(grid)
+    for (this_wflow_id in workflows$wflow_id) {
+      wf_with_initial <- wf_with_initial |>
+        option_add(
+          id = this_wflow_id,
+          initial = grid_results |> extract_workflow_set_result(id = this_wflow_id)
+        )
+    }
+    bayes_results <- wf_with_initial |>
+      workflow_map(
+        fn = "tune_bayes",
+        seed = 1503,
+        resamples = this_split,
+        iter = 50,
+        control = bayes_ctrl,
+        verbose = TRUE,
+        metrics = my_metrics
+      )
+    saveRDS(bayes_results, bayes_result_file)
+  }
+  return(bayes_results)
+})
+  # stopCluster(cl)
+  
+  names(cv_results) <- names(split_list)
+#   saveRDS(cv_results, "cv_results.rds")
+# } else {
+#   # load the models
+#   cv_results <- readRDS("cv_results.rds")
+# }
 ```
 
-```{r, plot-results, fig.width=10, fig.height=10}
-best_models_per_split <- lapply(names(cv_results), function(this_split){
-  this_result <- cv_results[[this_split]]
-  print(autoplot(this_result, type="wflow_id") + labs(title = this_split))
+## Evaluate Models and Select Best
+
+```{r, plot-results-select-best, fig.width=10, fig.height=6}
+wflow_ids <- workflows$wflow_id
+wflow_ids_wo_linear <- wflow_ids[!endsWith(wflow_ids, "_linear")]
   
-  cv_result_dt <- this_result |> rank_results(rank_metric = main_metric, select_best = TRUE) |> data.table::setDT()
-  cv_result_dt[, c('Features', 'Model Name'):=data.table::tstrsplit(wflow_id, "_", fixed = TRUE)]
-  cv_result_dt[, rank:=factor(rank, levels=sort(unique(rank)))]
-  print(ggplot(cv_result_dt, aes(x = rank, y = mean, color = Features)) +
-    geom_point() +
-    geom_errorbar(aes(ymin = mean - std_err, ymax = mean + std_err)) +
-    facet_wrap(.metric~reorder(`Model Name`, rank), scales = 'free') + labs(title = this_split))
+best_models_per_split <- lapply(names(cv_results), function(this_split_name){
+  this_result <- cv_results[[this_split_name]]
+  print(autoplot(this_result, type="wflow_id") + labs(title = this_split_name))
+  # print(autoplot(
+  #    this_result,
+  #    rank_metric = main_metric,
+  #    select_best = TRUE,
+  #    type="wflow_id"    
+  # ) + labs(title = this_split_name))
   
-  all_cv_results <- this_result |>
-    mutate(metrics = map(result, collect_metrics))  |>
-    tidyr::unnest(cols = metrics) |>
-    data.table::setDT()
-  all_cv_results[, c('Features', 'Model Name'):=data.table::tstrsplit(wflow_id, "_", fixed = TRUE)]
-  
-  best_models <- lapply(names(model_list)[-1], function(model_name){
-    best_models <- all_cv_results |> 
-      subset(`Model Name` == model_name & .metric == main_metric) |> 
-      mutate(max_rsq = max(mean, na.rm=TRUE)) |> 
-      filter(mean >= max_rsq - std_err)
-    if (model_name == "elnet") {
-      best_models <- best_models |> arrange(desc(penalty), mixture)
-    } else if ("lasso") {
-      best_models <- best_models |> arrange(desc(penalty))
-    } else if ('RF') {
-      best_models <- best_models |> arrange(trees, mtry, desc(min_n))
-    } else if ("nnet") {
-      best_models <- best_models |> arrange(epochs, hidden_units, desc(penalty))
-    } else stop("Unknown model type")
-    best_row <- best_models |> 
-      slice_head(n = 1)
-    best_model <-
-      this_result |>
-      extract_workflow(best_row$wflow_id) |>
-      finalize_workflow(best_row) |>
-      fit(data = train_data)
+  final_models <- sapply(wflow_ids_wo_linear, function(this_wflow_id) {
+    wflow_results <- this_result |> 
+      extract_workflow_set_result(this_wflow_id)
+    print(autoplot(wflow_results) + labs(title=paste(this_split_name, this_wflow_id)))
+    # print(autoplot(wflow_results, type = 'performance') + labs(title = paste(this_split_name, this_wflow_id)))
+    specs <- workflows |> extract_spec_parsnip(this_wflow_id)
+    tuning_params <- specs |> extract_parameter_set_dials() |> pull(name)
+    if (inherits(specs, "linear_reg")) {
+      if (all(c("penalty", "mixture") %in% tuning_params))
+        best_model <- wflow_results |> select_by_one_std_err(metric = main_metric, desc(penalty), mixture)
+      else if ("penalty" %in% tuning_params)
+        best_model <- wflow_results |> select_by_one_std_err(metric = main_metric, desc(penalty))
+      else if ("mixture" %in% tuning_params)
+        best_model <- wflow_results |> select_by_one_std_err(metric = main_metric, mixture)
+    } else if (inherits(specs, "rand_forest")) {
+      best_model <- wflow_results |> select_by_one_std_err(metric = main_metric, trees, mtry, desc(min_n))
+    } else if (inherits(specs, "mlp")) {
+      best_model <- wflow_results |> select_by_one_std_err(metric = main_metric, epochs, hidden_units, desc(penalty))
+    }
+    
+    # list(one_std_err_results = best_model, 
+    #      fit = this_result |>
+    #        extract_workflow(this_wflow_id) |>
+    #        finalize_workflow(best_model) |>
+    #        last_fit(split = enable_split, metrics=my_metrics))
     best_model
-  })
-  names(best_models) <- names(model_list)[-1]
-  best_models
+    
+  }, simplify = FALSE)
+
+  one_std_err_results <-
+    data.table::rbindlist(
+      final_models,
+      idcol = 'wflow_id',
+      fill = TRUE
+    ) |>
+    select(wflow_id, .config)
+  best_results <- this_result |> 
+    rank_results(rank_metric = main_metric, select_best = TRUE) |>
+    select(wflow_id, .config) |>
+    unique()
+  results_to_keep <- rbind(one_std_err_results, best_results)
+  
+  cv_result_dt <- this_result |> rank_results(rank_metric = main_metric) |> semi_join(results_to_keep)
+  cv_result_dt[, rank := factor(rank, levels = sort(unique(rank)))]
+  
+  print(ggplot(cv_result_dt, aes(x = rank, y = mean, color = wflow_id)) +
+    geom_point() +
+    geom_errorbar(aes(ymin = mean - std_err, ymax = mean + std_err), width = .5) +
+    facet_wrap(~.metric, scales = 'free') + labs(title = this_split_name))
+  
+  final_fits <- sapply(names(final_models), function(this_wflow_id)
+    this_result |>
+           extract_workflow(this_wflow_id) |>
+           finalize_workflow(final_models[[this_wflow_id]]) |>
+           last_fit(split = enable_split, metrics=my_metrics),
+    simplify = FALSE)
+  
+  linear_models <- sapply(wflow_ids[!wflow_ids %in% wflow_ids_wo_linear], function(this_wflow_id){
+    this_recipe_name <- sub(pattern = '_.*$', replacement = '', this_wflow_id)
+    workflow() |> 
+      add_recipe(recipe_list[[this_recipe_name]]) |>
+      add_model(lm_model) |> 
+      last_fit(split = enable_split, metrics = my_metrics)
+  }, simplify = FALSE)
+  c(final_fits, linear_models)
 })
 names(best_models_per_split) <- names(cv_results)
 ```
 
-```{r, plot-specific-results, eval=FALSE}
-# now plot and gather best model for each workflow
-wflow_ids <- workflows$wflow_id
-wflow_ids <- wflow_ids[!endsWith(wflow_ids, "_linear")]
-final_models <- sapply(wflow_ids, function(this_wflow_id) {
-  wflow_results <- train_results |> 
-    extract_workflow_set_result(this_wflow_id)
-  print(autoplot(wflow_results) + labs(title=this_wflow_id))
-  specs <- workflows |> extract_spec_parsnip(this_wflow_id)
-  tuning_params <- specs |> extract_parameter_set_dials() |> pull(name)
-  if (inherits(specs, "linear_reg")) {
-    if (all(c("penalty", "mixture") %in% tuning_params))
-      best_model <- wflow_results |> select_by_one_std_err(metric = main_metric, desc(penalty), mixture)
-    else if ("penalty" %in% tuning_params)
-      best_model <- wflow_results |> select_by_one_std_err(metric = main_metric, desc(penalty))
-    else if ("mixture" %in% tuning_params)
-      best_model <- wflow_results |> select_by_one_std_err(metric = main_metric, mixture)
-  } else if (inherits(specs, "rand_forest")) {
-    best_model <- wflow_results |> select_by_one_std_err(metric = main_metric, trees, mtry, desc(min_n))
-  } else if (inherits(specs, "mlp")) {
-    best_model <- wflow_results |> select_by_one_std_err(metric = main_metric, epochs, hidden_units, desc(penalty))
-  }
-  train_results |>
-    extract_workflow(this_wflow_id) |>
-    finalize_workflow(best_model) |>
-    fit(data = train_data)
+### Evaluate Best Lasso Coefficients
+
+```{r, tidy-lasso-coefs}
+# LASSO can be used for feature selection only, so now we will build a more complex model with the selected variables from LASSO
+selected_coefs <- best_models_per_split$repeated$meanImpute_lasso |> extract_fit_parsnip() |> tidy() |> subset(estimate != 0) |> mutate(abs_estimate = abs(estimate)) |> arrange(desc(abs_estimate)) |> select(-abs_estimate)
+print(selected_coefs)
+selected_features <- selected_coefs |> subset(term != '(Intercept)') |> pull(term)
+
+
+# now let's make another recipe using only those features
+selected_recipe <- general_recipe |>
+  update_role(all_of(general_predictors), new_role = "old_predictor") |>
+  update_role(all_of(selected_features), new_role = "predictor") 
+
+quadratic_recipe <- selected_recipe |>
+  step_poly(all_numeric_predictors(), degree = 2) 
+
+interaction_recipe <- selected_recipe |>
+  step_interact(~ all_predictors():all_predictors())
+
+new_recipes <- list(selected = selected_recipe, 
+                     quadratic = quadratic_recipe, 
+                     interaction = interaction_recipe)
+
+recipe_list <- c(recipe_list, new_recipes)
+
+new_models <- sapply(new_recipes, 
+       function(this_recipe){
+         workflow() |> 
+           add_recipe(this_recipe) |>
+           add_model(lm_model) |>
+           last_fit(split = enable_split, metrics = my_metrics)
 }, simplify = FALSE)
+names(new_models) <- paste(names(new_models), 'linear', sep = "_")
+best_models_per_split$repeated <- c(best_models_per_split$repeated, new_models)
 ```
 
-```{r}
-# Problem: this is on the standardized response, while the final model will be on the original response?
-final_models$genus_elnet |> extract_fit_parsnip() |> tidy() |> subset(estimate != 0) |> mutate(abs_estimate = abs(estimate)) |> arrange(desc(abs_estimate)) |> select(-abs_estimate)
-final_models$genus_lasso |> extract_fit_parsnip() |> tidy() |> subset(estimate != 0) |> mutate(abs_estimate = abs(estimate)) |> arrange(desc(abs_estimate)) |> select(-abs_estimate)
+### Current Methods in Literature
+
+```{r, current-methods}
+# Conversion factor kcal to kilojoule
+conversion_factor <- 4.184
+
+HarrisBenedict <- function(weight, height, age, sex_female){
+  ifelse(sex_female, 
+         655.1 + 9.6*weight + 1.8*height - 4.7*age,
+         66.47 + 13.7*weight + 5*height - 6.8*age) * conversion_factor
+}
+
+Kleiber <- function(weight){
+  283 * weight^0.75
+}
+
+WHO <- function(weight, age, sex_female) {
+  
+  # Initialize RMR vector
+  RMR <- numeric(length(weight))
+  
+  # Define reusable age filters
+  age_filter <- list(
+    age_3_10 = age <= 18,
+    age_10_30 = age >= 18 & age <= 30,
+    age_30_60 = age > 30 & age <= 60,
+    age_60_plus = age > 60
+  )
+  
+  # Calculate RMR for each age group using `ifelse` conditioned on `sex_female`
+  RMR[age_filter$age_3_10] <- ifelse(sex_female[age_filter$age_3_10],
+                                     (22.5 * weight[age_filter$age_3_10] + 499),
+                                     (22.7 * weight[age_filter$age_3_10] + 495))
+  
+  RMR[age_filter$age_10_30] <- ifelse(sex_female[age_filter$age_10_30],
+                                      (14.7 * weight[age_filter$age_10_30] + 496),
+                                      (15.3 * weight[age_filter$age_10_30] + 679))
+  
+  RMR[age_filter$age_30_60] <- ifelse(sex_female[age_filter$age_30_60],
+                                      (8.7 * weight[age_filter$age_30_60] + 829),
+                                      (11.6 * weight[age_filter$age_30_60] + 879))
+  
+  RMR[age_filter$age_60_plus] <- ifelse(sex_female[age_filter$age_60_plus],
+                                        (10.5 * weight[age_filter$age_60_plus] + 596),
+                                        (13.5 * weight[age_filter$age_60_plus] + 487))
+  
+  return(RMR*conversion_factor)
+}
+
+```
+
+## Compute Training and Testing Errors
+
+### Training Errors
+
+```{r, training-errors, fig.width=12, fig.height=8}
+training_preds <-
+  data.table::rbindlist(
+    sapply(names(best_models_per_split$repeated), function(this_wflow_id) {
+      last_fit <- best_models_per_split$repeated[[this_wflow_id]]
+      this_recipe_name <- sub(pattern = '_.*$', replacement = '', this_wflow_id)
+      this_recipe <- recipe_list[[this_recipe_name]]
+      prepped_training_data <- this_recipe |> step_select(all_of(c(all_predictors(), all_outcomes()))) |> prep() |> juice()
+      last_fit |> extract_fit_parsnip() |> predict(new_data = prepped_training_data) |> bind_cols(train_data |> select(all_of(response_variable)))
+    }, simplify = FALSE),
+    idcol = 'model'
+  ) |> rename(truth = RMR.KJ, estimate = .pred)
+
+training_preds <- data.table::rbindlist(list(
+  data.table::data.table(model = 'Harris-Benedict', 
+                         estimate = HarrisBenedict(weight = train_data$`GEWICHt_SECA, kg`,
+                                                   height = train_data$`GROESSE, cm`,
+                                                   age = train_data$`Alter, Jahre`,
+                                                   train_data$SEX == 'weiblich'),
+                         truth = train_data$RMR.KJ),
+  data.table::data.table(model = 'Kleiber', 
+                         estimate = Kleiber(weight = train_data$`GEWICHt_SECA, kg`),
+                         truth = train_data$RMR.KJ),
+  data.table::data.table(model = 'WHO', 
+                         estimate = WHO(weight = train_data$`GEWICHt_SECA, kg`, 
+                                        age = train_data$`Alter, Jahre`,
+                                        sex_female = train_data$SEX == 'weiblich'),
+                         truth = train_data$RMR.KJ),
+  training_preds
+))
+
+train_metrics <- training_preds[, my_metrics(.SD, truth = truth, estimate = estimate), by=model]
+train_metrics <- data.table::dcast(train_metrics, model ~ .metric, value.var = '.estimate')
+metric_names <- names(train_metrics)[names(train_metrics) != 'model']
+train_metrics[, metrics_string := do.call(
+    paste, 
+    c(Map(function(name, value) paste(name, round(value, 2), sep = ": "), metric_names, mget(metric_names)), sep = "\n")
+)]
+
+ggplot(training_preds, aes(x = truth, y = estimate)) +
+  geom_abline(color = "gray50", lty = 2) + 
+  geom_point(alpha = 0.5) + 
+  facet_wrap(~factor(model, levels = train_metrics[order(get(main_metric)), model]), nrow = 2) +
+  coord_obs_pred() +
+  labs(title = 'Training Errors', x = 'Observed', y = 'Predicted') +
+  geom_label(data = train_metrics, aes(x = Inf, y = -Inf, label = metrics_string), 
+             hjust = 1.1, vjust = -0.1, inherit.aes = FALSE, size = 3)
+
+```
+
+### Testing Errors
+```{r, testing-errors, fig.width=12, fig.height=8}
+testing_preds <-
+  data.table::rbindlist(
+    sapply(
+      best_models_per_split$repeated,
+      collect_predictions,
+      simplify = FALSE
+    ),
+    idcol = 'model'
+  ) |> rename(truth = RMR.KJ, estimate = .pred) |> select(model, estimate, truth) 
+
+existing_preds <- data.table::rbindlist(list(
+  data.table::data.table(model = 'Harris-Benedict', 
+                         estimate = HarrisBenedict(weight = test_data$`GEWICHt_SECA, kg`,
+                                                   height = test_data$`GROESSE, cm`,
+                                                   age = test_data$`Alter, Jahre`,
+                                                   test_data$SEX == 'weiblich'),
+                         truth = test_data$RMR.KJ),
+  data.table::data.table(model = 'Kleiber', 
+                         estimate = Kleiber(weight = test_data$`GEWICHt_SECA, kg`),
+                         truth = test_data$RMR.KJ),
+  data.table::data.table(model = 'WHO', 
+                         estimate = WHO(weight = test_data$`GEWICHt_SECA, kg`, 
+                                        age = test_data$`Alter, Jahre`,
+                                        sex_female = test_data$SEX == 'weiblich'),
+                         truth = test_data$RMR.KJ)
+))
+existing_metrics <- existing_preds[, my_metrics(.SD, truth = truth, estimate = estimate), by=model]
+existing_metrics <- data.table::dcast(existing_metrics, model ~ .metric, value.var = '.estimate')
+
+testing_metrics <-
+  data.table::rbindlist(
+    sapply(
+      best_models_per_split$repeated,
+      collect_metrics,
+      type='wide',
+      simplify = FALSE
+    ),
+    idcol = 'model'
+  ) |> select(-.config) 
+testing_preds <- rbind(existing_preds, testing_preds)
+testing_metrics <- rbind(existing_metrics, testing_metrics)
+
+metric_names <- names(testing_metrics)[names(testing_metrics) != 'model']
+testing_metrics[, metrics_string := do.call(
+    paste, 
+    c(Map(function(name, value) paste(name, round(value, 2), sep = ": "), metric_names, mget(metric_names)), sep = "\n")
+)]
+
+ggplot(testing_preds, aes(x = truth, y = estimate)) +
+  geom_abline(color = "gray50", lty = 2) + 
+  geom_point(alpha = 0.5) + 
+  facet_wrap(~factor(model, levels = testing_metrics[order(get(main_metric)), model]), nrow = 2) +
+  coord_obs_pred() +
+  labs(title = 'Testing Errors', x = 'Observed', y = 'Predicted') +
+  geom_label(data = testing_metrics, aes(x = Inf, y = -Inf, label = metrics_string), 
+             hjust = 1.1, vjust = -0.1, inherit.aes = FALSE, size = 3)
+ggplot(testing_preds, aes(x = truth, y = estimate)) +
+  geom_abline(color = "gray50", lty = 2) + 
+  geom_point(alpha = 0.5) + 
+  facet_wrap(~factor(model, levels = testing_metrics[order(get(main_metric)), model]), nrow = 2) +
+  coord_obs_pred(xlim=c(min(testing_preds$truth), max(testing_preds$truth)),
+                 ylim=c(min(testing_preds$truth), max(testing_preds$truth))) +
+  labs(title = 'Testing Errors', x = 'Observed', y = 'Predicted') +
+  geom_label(data = testing_metrics, aes(x = Inf, y = -Inf, label = metrics_string), 
+             hjust = 1.1, vjust = -0.1, inherit.aes = FALSE, size = 3)
 ```
 
 
-```{r, glmnet-example}
+## Evaluate LASSO Feature Robustness
+
+```{r, lasso-robustness, fig.width=8, fig.height=8}
 library(glmnet)
-library(sparsegl)
-
+# library(sparsegl)
 
 # prepare x and y 
-x <- makeX(full_train_data |> select(all_of(c(general_predictors, genus_predictors))) |> mutate(across(
-      where(is.numeric), scale
-    )), sparse = TRUE)
-y <- full_train_data |> pull(response_variable)
+prepped_training_data <- meanImpute_recipe |> step_select(all_of(c(all_predictors(), all_outcomes()))) |> prep() |> juice()
+
+x <- prepped_training_data |> select(-any_of(response_variable)) |> as.matrix()
+y <- prepped_training_data |> pull(all_of(response_variable))
 
 # clean predictor names
 clean_predictors <- gsub("^`|`$", "", colnames(x))
@@ -516,7 +728,7 @@ cvfits <- #pbmcapply::pbmc
   repeat_splits <- repeated_cv_split |> subset(id == repeat_id)
   
   # Initialize a fold ID vector (length = number of rows in the data)
-  fold_ids <- integer(full_train_data |> nrow())
+  fold_ids <- integer(train_data |> nrow())
   
   # Assign fold numbers to each observation based on assessment sets
   for (i in seq_along(repeat_splits$splits)) {
@@ -526,25 +738,25 @@ cvfits <- #pbmcapply::pbmc
   }
   stopifnot(all(fold_ids>0))
   # compute sgl
-  sgls <- pbmcapply::pbmclapply(grouping_weights, function(grouping_weight) {
-    sgl <- cv.sparsegl(
-      x = x,
-      y = y,
-      group = mapping_dt[, group_id],
-      asparse = grouping_weight,
-      foldid = fold_ids
-    )
-  }, mc.cores = length(grouping_weights))
-  names(sgls) <- grouping_weights
-  best_sgls <-
-    data.table::rbindlist(sapply(sgls, function(x)
-      summary(x)$table["lambda.1se", ], simplify = FALSE),
-      idcol = 'grouping_weight')
-  best_row <- best_sgls |>
-    mutate(min_cvm = min(cvm)) |>
-    filter(cvm <= min_cvm + cvsd) |>
-    arrange(nnzero, active_grps, desc(lambda)) |>
-    slice_head(n = 1)
+  # sgls <- pbmcapply::pbmclapply(grouping_weights, function(grouping_weight) {
+  #   sgl <- cv.sparsegl(
+  #     x = x,
+  #     y = y,
+  #     group = mapping_dt[, group_id],
+  #     asparse = grouping_weight,
+  #     foldid = fold_ids
+  #   )
+  # }, mc.cores = length(grouping_weights))
+  # names(sgls) <- grouping_weights
+  # best_sgls <-
+  #   data.table::rbindlist(sapply(sgls, function(x)
+  #     summary(x)$table["lambda.1se", ], simplify = FALSE),
+  #     idcol = 'grouping_weight')
+  # best_row <- best_sgls |>
+  #   mutate(min_cvm = min(cvm)) |>
+  #   filter(cvm <= min_cvm + cvsd) |>
+  #   arrange(nnzero, active_grps, desc(lambda)) |>
+  #   slice_head(n = 1)
   # sgl_plot <- plot(sgl$sparsegl.fit, y_axis = "group", x_axis = "lambda", add_legend = TRUE)
   # sgl_plot$data <- sgl_plot$data |>
   #   mutate(group = setNames(mapping_dt$group, paste0("group", mapping_dt$group_id))[group])
@@ -560,10 +772,11 @@ cvfits <- #pbmcapply::pbmc
     )
   
   # print(plot(cvfit))
-  list(lasso = lasso, sgl = sgls[[best_row$grouping_weight]])
+  #list(lasso = lasso, sgl = sgls[[best_row$grouping_weight]])
+  lasso
 }) #, mc.cores = length(repeat_ids))
 names(cvfits) <- repeat_ids
-sapply(cvfits, plot)
+# sapply(cvfits, plot)
 nonzero_coefs <- lapply(cvfits, function(cvfit) {
   # get the nonzero coefficients
   coefs <- coef(cvfit, s = "lambda.1se")
@@ -572,9 +785,7 @@ nonzero_coefs <- lapply(cvfits, function(cvfit) {
   names(nonzero_coefs)
   })
 names(nonzero_coefs) <- repeat_ids
-```
 
-```{r, plot-coefs}
 transposed_df <- stack(nonzero_coefs)
 # Split the data by feature name, grouping all indices by feature
 transposed_list <- split(transposed_df$ind, transposed_df$values)
@@ -587,124 +798,8 @@ upset(fromList(transposed_list), nsets=length(transposed_list), order.by = "freq
 ```{r, fit-lm}
 new_predictors <- Reduce(intersect, nonzero_coefs) # names(nonzero_coefs)[names(nonzero_coefs) != "(Intercept)"]
 new_predictors <- new_predictors[new_predictors != "(Intercept)"]
-linear_model <- lm(as.formula(paste(response_variable, "~",  paste(new_predictors, collapse= " + "))), 
-   data = full_train_data |> select(all_of(general_predictors)) |> mutate(across(where(is.numeric), scale)) |> cbind(full_train_data |> select(all_of(response_variable))))
+linear_model <- lm(as.formula(paste(response_variable, "~",  paste(paste0("`", new_predictors, "`"), collapse= " + "))), 
+   data = enable_data |> mutate(across(all_of(new_predictors), ~ ifelse(is.na(.), mean(., na.rm = TRUE), .))))
 summary(linear_model)
 ```
 
-
-```{r, tune-models, eval=FALSE}
-library(finetune)
-
-# define the sa control
-sa_ctrl <-
-   control_sim_anneal(
-      save_pred = TRUE,
-      save_workflow = TRUE,
-      verbose = TRUE,
-      no_improve = 10L
-   )
-
-# set the grid search
-sa_results <-
-   workflows |>
-   option_add(id = "general_lasso", initial = grid_results |> extract_workflow_set_result("general_lasso")) |>
-   option_add(id = "general_RF", initial = grid_results |> extract_workflow_set_result("general_RF")) |>
-   option_add(id = "general_neural_network", initial = grid_results |> extract_workflow_set_result("general_neural_network")) |>
-   workflow_map(
-      fn = "tune_sim_anneal",
-      seed = 1503,
-      iter = 50,
-      resamples = repeated_cv_split,
-      control = sa_ctrl,
-      verbose = TRUE,
-      metrics = metrics
-   )
-
-train_results <- sa_results
-```
-
-```{r, eval=FALSE}
-library(finetune)
-
-race_ctrl <-
-   control_race(
-      save_pred = TRUE,
-      save_workflow = TRUE,
-      verbose = TRUE
-   )
-
-race_results <-
-   workflows |>
-   workflow_map(
-      "tune_race_anova",
-      seed = 1503,
-      resamples = repeated_cv_split,
-      grid = 25,
-      control = race_ctrl,
-      verbose = TRUE
-   )
-```
-
-```{r, train-rf, eval=FALSE}
-# Use tidymodels to build machine learning models predicting RMR.KJ to build a linear model, an elastic net model and a random forest on the repeated_cv_split. Use grid_search for the appropriate parameters and make nice plots to show performance
-rf_wflow <- 
-  workflow() |>
-  add_model(rf_model) |>
-  add_recipe(general_recipe)
-
-rf_params <-
-  rf_wflow |>
-  extract_parameter_set_dials() |>
-  update(mtry = mtry(c(1, sum(
-    rf_wflow[["pre"]][["actions"]][["recipe"]][["recipe"]][["var_info"]][["role"]] == "predictor"
-  ))))
-
-
-start_grid <- 
-  rf_params |>
-  grid_regular(levels = 4)
-
-rf_grid <- 
-  rf_wflow |> 
-  tune_grid(
-    resamples = repeated_cv_split,
-    grid = start_grid,
-    metrics = metrics,
-    control = control_grid(verbose = TRUE, parallel_over = "everything")
-  )
-autoplot(rf_grid)
-select_by_one_std_err(rf_grid, metric = main_metric, trees, mtry, desc(min_n))
-
-rf_bo <-
-  rf_wflow |>
-  tune_bayes(
-    resamples = repeated_cv_split,
-    metrics = metrics,
-    initial = rf_grid,
-    param_info = rf_params,
-    iter = 50,
-    control = control_bayes(verbose = TRUE, parallel_over = "everything")
-  )
-autoplot(rf_bo, type = "performance")
-autoplot(rf_bo, type = "parameters")
-select_by_one_std_err(rf_bo, metric = main_metric, trees, mtry, desc(min_n))
-
-
-rf_sa <-
-  rf_wflow |>
-  finetune::tune_sim_anneal(
-    resamples = repeated_cv_split,
-    metrics = metrics,
-    initial = rf_grid,
-    param_info = rf_params,
-    iter = 50,
-    control = finetune::control_sim_anneal(verbose = TRUE, no_improve = 10L, parallel_over = "everything")
-  )
-autoplot(rf_sa, type = "performance")
-autoplot(rf_sa, type = "parameters")
-select_by_one_std_err(rf_sa, metric = main_metric, trees, mtry, desc(min_n))
-
-# show the metrics where mtry, trees and min_n are in the standard error of the best model
-collect_metrics(rf_sa) |> subset(.config == select_by_one_std_err(rf_sa, metric = 'rsq', trees, mtry, desc(min_n))$.config)
-```
