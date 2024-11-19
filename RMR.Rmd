@@ -176,17 +176,23 @@ general_recipe <-
   update_role(all_of(other_labelling_columns), new_role = "labels") |>
   update_role(all_of(grouping_column), new_role = "splitting indicator") |>
   update_role(all_of(taxa_names), new_role = "microbiome") |>
+  update_role(all_of(microbiome_predictors), new_role = "predictor") |>
   step_impute_mean(all_numeric_predictors()) |>
-  step_zv(all_predictors()) |>
+  step_zv(all_predictors())
+
+orig_scale_recipe <- general_recipe  |>
+  step_dummy(all_nominal_predictors()) 
+
+normalized_recipe <- general_recipe  |>
   step_normalize(all_numeric_predictors()) |> 
   step_dummy(all_nominal_predictors())
 
-basic_recipe <- general_recipe |>
-  update_role(all_of(general_predictors), new_role = "old_predictor") |>
-  update_role(all_of(basic_predictors), new_role = "predictor")
+# basic_recipe <- general_recipe |>
+#   update_role(all_of(general_predictors), new_role = "old_predictor") |>
+#   update_role(all_of(basic_predictors), new_role = "predictor")
 
-meanImpute_recipe <- general_recipe |>
-  update_role(all_of(microbiome_predictors), new_role = "predictor")
+# meanImpute_recipe <- general_recipe |>
+#   update_role(all_of(microbiome_predictors), new_role = "predictor")
 
 # interaction_recipe <- meanImpute_recipe |>
 #   step_poly(all_numeric_predictors(), degree = 2) |>
@@ -196,7 +202,8 @@ meanImpute_recipe <- general_recipe |>
 recipe_list <- list(# basic = basic_recipe,
                     # general = general_recipe,
                     # interactions = interaction_recipe,
-                    meanImpute = meanImpute_recipe)
+                    normalized = normalized_recipe,
+                    origScale = orig_scale_recipe)
 
 main_metric <- "rsq"
 my_metrics <- metric_set(rmse, ccc, rsq, mae)
@@ -214,12 +221,12 @@ elnet_model <-
 # lasso model
 lasso_model <- 
   linear_reg(penalty = tune(), mixture = 1) |> 
-  set_engine("glmnet")
+  set_engine("glmnet", standardize = TRUE)
 
 # random forest
 rf_model <-
   rand_forest(trees = tune(), min_n = tune(), mtry = tune()) |> 
-  set_engine("ranger") |> 
+  set_engine("ranger", importance = 'permutation') |> 
   set_mode("regression")
 
 # neural network
@@ -274,8 +281,14 @@ params_list <- list(elnet = elnet_params,
 ```{r, add-params}
 # set the workflows
 workflows <- workflow_set(
-      preproc = recipe_list, 
-      models = model_list)
+      preproc = c(recipe_list['normalized'],
+                  recipe_list['origScale'],
+                  recipe_list['origScale'], 
+                  recipe_list['origScale'], 
+                  recipe_list['normalized']), 
+      models = c(model_list['lasso'],
+                 model_list),
+      cross = FALSE)
 
 workflows <- workflows |>
     option_add(grid = 100)
@@ -488,14 +501,163 @@ names(best_models_per_split) <- names(cv_results)
 
 ```{r, tidy-lasso-coefs}
 # LASSO can be used for feature selection only, so now we will build a more complex model with the selected variables from LASSO
-selected_coefs <- best_models_per_split$repeated$meanImpute_lasso |> extract_fit_parsnip() |> tidy() |> subset(estimate != 0) |> mutate(abs_estimate = abs(estimate)) |> arrange(desc(abs_estimate)) |> select(-abs_estimate)
+normalized_lasso_coefs <- best_models_per_split$repeated$normalized_lasso |> extract_fit_parsnip() |> tidy() |> subset(estimate != 0) |> mutate(abs_estimate = abs(estimate)) |> arrange(desc(abs_estimate)) |> select(-abs_estimate)
+print(normalized_lasso_coefs)
+normalized_lasso_coefs <- normalized_lasso_coefs |> subset(term != '(Intercept)')
+normalized_lasso_coefs[, term:=factor(term, levels=term)]
+
+feature_colors <- c(
+  "FFM_SECA,kg" = "#009999",          # Teal (greenish for FFM_SECA)
+  "GEWICHt_SECA, kg" = "#B2DF8A",    # Light Green (for GEWICHt_SECA)
+  "mean_temp" = "#171723",           # Black (for mean_temp)
+  "GFRCKDE, mg/min" = "#ff6db6",     # Pink (blood measure GFRCKDE)
+  "FT3, pg/ml" = "#b66dff",          # Purple (blood measure FT3)
+  "MCHC, g/dl" = "#490092",          # Dark Purple (blood measure MCHC)
+  "unexplained" = "#db6d00",         # Orange (for unexplained)
+  "individual variation" = "#FDB462" # Light Orange (for individual variation)
+)
+
+# Function to calculate luminance
+calculate_luminance <- function(hex_color) {
+  rgb <- col2rgb(hex_color) / 255
+  # Apply relative luminance formula
+  luminance <- 0.2126 * rgb[1, ] + 0.7152 * rgb[2, ] + 0.0722 * rgb[3, ]
+  return(luminance)
+}
+
+# Decide text color (black or white) based on luminance threshold
+text_colors <- sapply(feature_colors, function(color) {
+  if (calculate_luminance(color) > 0.5) {
+    "black"  # Light background -> Black text
+  } else {
+    "white"  # Dark background -> White text
+  }
+})
+
+ggplot(normalized_lasso_coefs, aes(x = estimate, y = reorder(term, abs(estimate)), fill = term)) +
+    geom_col() +
+    scale_fill_manual(values = feature_colors) +
+    theme(axis.text.y = element_blank(), axis.ticks.y = element_blank()) + 
+    labs(x = "LASSO Coefficient on Standardized Features", y = NULL, fill = NULL)
+```
+
+
+```{r, tidy-lasso-coefs-origScale}
+best_models_per_split$repeated$normalized_lasso <- NULL
+selected_coefs <- best_models_per_split$repeated$origScale_lasso |> extract_fit_parsnip() |> tidy() |> subset(estimate != 0) |> mutate(abs_estimate = abs(estimate)) |> arrange(desc(abs_estimate)) |> select(-abs_estimate)
 print(selected_coefs)
+```
+
+
+### Evaluate LASSO Feature Robustness
+
+```{r, lasso-robustness, fig.width=8, fig.height=8}
+library(glmnet)
+# library(sparsegl)
+
+# prepare x and y 
+prepped_training_data <- orig_scale_recipe |> step_select(c(all_predictors(), all_outcomes())) |> prep() |> juice()
+
+x <- prepped_training_data |> select(-any_of(response_variable)) |> as.matrix()
+y <- prepped_training_data |> pull(all_of(response_variable))
+
+# clean predictor names
+clean_predictors <- gsub("^`|`$", "", colnames(x))
+data.table::setkey(column_groups, 'column')
+mapping_dt <- column_groups[clean_predictors]
+na_mapping <-
+  sapply(mapping_dt[is.na(group), column], function(pred)
+    column_groups[column_groups$column[startsWith(pred, column_groups$column)], group])
+mapping_dt[is.na(group), group := na_mapping[column]]
+mapping_dt[, group_id := as.integer(factor(group))]
+
+repeat_ids <- repeated_cv_split$id |> unique()
+grouping_weights <- seq(.05, .95, by = .1)
+
+# lasso test:
+cvfits <- #pbmcapply::pbmc
+  lapply(repeat_ids, function(repeat_id) {
+  # Filter the splits for the specified repeat
+  repeat_splits <- repeated_cv_split |> subset(id == repeat_id)
+  
+  # Initialize a fold ID vector (length = number of rows in the data)
+  fold_ids <- integer(train_data |> nrow())
+  
+  # Assign fold numbers to each observation based on assessment sets
+  for (i in seq_along(repeat_splits$splits)) {
+    fold <- repeat_splits$splits[[i]]
+    assessment_indices <- tidy(fold) |> subset(Data == "Assessment") |> pull(Row)
+    fold_ids[assessment_indices] <- i  # Assign fold number `i` to assessment indices
+  }
+  stopifnot(all(fold_ids>0))
+  # compute sgl
+  # sgls <- pbmcapply::pbmclapply(grouping_weights, function(grouping_weight) {
+  #   sgl <- cv.sparsegl(
+  #     x = x,
+  #     y = y,
+  #     group = mapping_dt[, group_id],
+  #     asparse = grouping_weight,
+  #     foldid = fold_ids
+  #   )
+  # }, mc.cores = length(grouping_weights))
+  # names(sgls) <- grouping_weights
+  # best_sgls <-
+  #   data.table::rbindlist(sapply(sgls, function(x)
+  #     summary(x)$table["lambda.1se", ], simplify = FALSE),
+  #     idcol = 'grouping_weight')
+  # best_row <- best_sgls |>
+  #   mutate(min_cvm = min(cvm)) |>
+  #   filter(cvm <= min_cvm + cvsd) |>
+  #   arrange(nnzero, active_grps, desc(lambda)) |>
+  #   slice_head(n = 1)
+  # sgl_plot <- plot(sgl$sparsegl.fit, y_axis = "group", x_axis = "lambda", add_legend = TRUE)
+  # sgl_plot$data <- sgl_plot$data |>
+  #   mutate(group = setNames(mapping_dt$group, paste0("group", mapping_dt$group_id))[group])
+  # print(sgl_plot)
+  # compute lasso
+  lasso <-
+    cv.glmnet(
+      x = x,
+      y = y,
+      alpha = 1,
+      family = "gaussian",
+      foldid = fold_ids,
+      standardize = TRUE
+    )
+  
+  # print(plot(cvfit))
+  #list(lasso = lasso, sgl = sgls[[best_row$grouping_weight]])
+  lasso
+}) #, mc.cores = length(repeat_ids))
+names(cvfits) <- repeat_ids
+# sapply(cvfits, plot)
+nonzero_coefs <- lapply(cvfits, function(cvfit) {
+  # get the nonzero coefficients
+  coefs <- coef(cvfit, s = "lambda.1se")
+  nonzero_coefs <- coefs[coefs[, 1] != 0, ]
+  sort(nonzero_coefs, decreasing = TRUE)
+  names(nonzero_coefs)
+  })
+names(nonzero_coefs) <- repeat_ids
+
+transposed_df <- stack(nonzero_coefs)
+# Split the data by feature name, grouping all indices by feature
+transposed_list <- split(transposed_df$ind, transposed_df$values)
+
+require(UpSetR)
+upset(fromList(transposed_list), nsets=length(transposed_list), order.by = "freq", nintersects = NA)
+```
+
+### Build More Complex Models
+
+```{r, complex-models}
 selected_features <- selected_coefs |> subset(term != '(Intercept)') |> pull(term)
 
 
 # now let's make another recipe using only those features
-selected_recipe <- general_recipe |>
+selected_recipe <- orig_scale_recipe |>
   update_role(all_of(general_predictors), new_role = "old_predictor") |>
+  update_role(all_of(microbiome_predictors), new_role = "old_predictor") |>
   update_role(all_of(selected_features), new_role = "predictor") 
 
 quadratic_recipe <- selected_recipe |>
@@ -520,6 +682,56 @@ new_models <- sapply(new_recipes,
 names(new_models) <- paste(names(new_models), 'linear', sep = "_")
 best_models_per_split$repeated <- c(best_models_per_split$repeated, new_models)
 ```
+
+#### Evaluate Models with Selected Features
+
+```{r, selected-models, fig.width=11, fig.height=7}
+require(ggrepel)
+selected_lm_fits <- sapply(new_models,
+       function(model) {
+         lm_fit <- model |> extract_fit_engine()
+         coef_mat <- lm_fit |> summary() |> coefficients()
+         coef_mat[coef_mat[, 'Pr(>|t|)'] < 0.05, , drop = FALSE] |> print()
+         lm_fit
+       }, simplify = FALSE)
+# anova(selected_lm_fits$selected_linear, selected_lm_fits$quadratic_linear)
+# anova(selected_lm_fits$quadratic_linear, selected_lm_fits$interaction_linear)
+
+feature_imps <- c("lmg", "pmvd")
+linear_imp <- relaimpo::calc.relimp(selected_lm_fits$selected_linear, type = feature_imps)
+expl_variance <- data.table::setDT(enframe(c(linear_imp$pmvd, `individual variation` = 0.043, unexplained = 0), 'Feature', 'Explained Variance'))
+expl_variance[Feature == 'unexplained', `Explained Variance` := 1 - sum(expl_variance$`Explained Variance`)]
+expl_variance[, Feature:=factor(Feature, levels=c(names(sort(linear_imp$pmvd, decreasing = TRUE)), 'unexplained', 'individual variation'))]
+data.table::setkey(expl_variance, Feature)
+expl_variance[, cum_var := cumsum(`Explained Variance`)]
+expl_variance[, x_space := cum_var - `Explained Variance`/2]
+
+ggplot(expl_variance, aes(x = `Explained Variance`, y = 'Feature', fill = reorder(Feature, -x_space))) + 
+    geom_col(position = 'fill') + 
+    scale_fill_manual(values = feature_colors, guide = guide_legend(reverse = TRUE, nrow = 1)) + 
+    theme(axis.text.y = element_blank(), axis.ticks.y = element_blank(), legend.position = 'top') + 
+    ggrepel::geom_label_repel(aes(label = round(`Explained Variance`, 3),
+                                  x = x_space,
+                                  y = 1.45),
+                              max.overlaps = 10,
+                              min.segment.length = 0,
+                              force = 10,
+                              show.legend = FALSE,
+                              color = text_colors,
+                              segment.color = 'black') + 
+    labs(y = NULL, fill = NULL)
+
+ggplot(
+  enframe((
+    best_models_per_split$repeated$origScale_RF |> extract_fit_engine()
+  )$variable.importance,
+  'feature',
+  'var_imp'
+  ) |> arrange(desc(var_imp)) |> slice_head(n = 20),
+  aes(x = var_imp, y = reorder(feature, var_imp))
+) + geom_col()
+```
+
 
 ### Current Methods in Literature
 
@@ -576,7 +788,7 @@ WHO <- function(weight, age, sex_female) {
 
 ### Training Errors
 
-```{r, training-errors, fig.width=12, fig.height=8}
+```{r, training-errors, fig.width=12, fig.height=6}
 training_preds <-
   data.table::rbindlist(
     sapply(names(best_models_per_split$repeated), function(this_wflow_id) {
@@ -627,7 +839,7 @@ ggplot(training_preds, aes(x = truth, y = estimate)) +
 ```
 
 ### Testing Errors
-```{r, testing-errors, fig.width=12, fig.height=8}
+```{r, testing-errors, fig.width=12, fig.height=6}
 testing_preds <-
   data.table::rbindlist(
     sapply(
@@ -696,110 +908,4 @@ ggplot(testing_preds, aes(x = truth, y = estimate)) +
 ```
 
 
-## Evaluate LASSO Feature Robustness
-
-```{r, lasso-robustness, fig.width=8, fig.height=8}
-library(glmnet)
-# library(sparsegl)
-
-# prepare x and y 
-prepped_training_data <- meanImpute_recipe |> step_select(all_of(c(all_predictors(), all_outcomes()))) |> prep() |> juice()
-
-x <- prepped_training_data |> select(-any_of(response_variable)) |> as.matrix()
-y <- prepped_training_data |> pull(all_of(response_variable))
-
-# clean predictor names
-clean_predictors <- gsub("^`|`$", "", colnames(x))
-data.table::setkey(column_groups, 'column')
-mapping_dt <- column_groups[clean_predictors]
-na_mapping <-
-  sapply(mapping_dt[is.na(group), column], function(pred)
-    column_groups[column_groups$column[startsWith(pred, column_groups$column)], group])
-mapping_dt[is.na(group), group := na_mapping[column]]
-mapping_dt[, group_id := as.integer(factor(group))]
-
-repeat_ids <- repeated_cv_split$id |> unique()
-grouping_weights <- seq(.05, .95, by = .1)
-
-# lasso test:
-cvfits <- #pbmcapply::pbmc
-  lapply(repeat_ids, function(repeat_id) {
-  # Filter the splits for the specified repeat
-  repeat_splits <- repeated_cv_split |> subset(id == repeat_id)
-  
-  # Initialize a fold ID vector (length = number of rows in the data)
-  fold_ids <- integer(train_data |> nrow())
-  
-  # Assign fold numbers to each observation based on assessment sets
-  for (i in seq_along(repeat_splits$splits)) {
-    fold <- repeat_splits$splits[[i]]
-    assessment_indices <- tidy(fold) |> subset(Data == "Assessment") |> pull(Row)
-    fold_ids[assessment_indices] <- i  # Assign fold number `i` to assessment indices
-  }
-  stopifnot(all(fold_ids>0))
-  # compute sgl
-  # sgls <- pbmcapply::pbmclapply(grouping_weights, function(grouping_weight) {
-  #   sgl <- cv.sparsegl(
-  #     x = x,
-  #     y = y,
-  #     group = mapping_dt[, group_id],
-  #     asparse = grouping_weight,
-  #     foldid = fold_ids
-  #   )
-  # }, mc.cores = length(grouping_weights))
-  # names(sgls) <- grouping_weights
-  # best_sgls <-
-  #   data.table::rbindlist(sapply(sgls, function(x)
-  #     summary(x)$table["lambda.1se", ], simplify = FALSE),
-  #     idcol = 'grouping_weight')
-  # best_row <- best_sgls |>
-  #   mutate(min_cvm = min(cvm)) |>
-  #   filter(cvm <= min_cvm + cvsd) |>
-  #   arrange(nnzero, active_grps, desc(lambda)) |>
-  #   slice_head(n = 1)
-  # sgl_plot <- plot(sgl$sparsegl.fit, y_axis = "group", x_axis = "lambda", add_legend = TRUE)
-  # sgl_plot$data <- sgl_plot$data |>
-  #   mutate(group = setNames(mapping_dt$group, paste0("group", mapping_dt$group_id))[group])
-  # print(sgl_plot)
-  # compute lasso
-  lasso <-
-    cv.glmnet(
-      x = x,
-      y = y,
-      alpha = 1,
-      family = "gaussian",
-      foldid = fold_ids
-    )
-  
-  # print(plot(cvfit))
-  #list(lasso = lasso, sgl = sgls[[best_row$grouping_weight]])
-  lasso
-}) #, mc.cores = length(repeat_ids))
-names(cvfits) <- repeat_ids
-# sapply(cvfits, plot)
-nonzero_coefs <- lapply(cvfits, function(cvfit) {
-  # get the nonzero coefficients
-  coefs <- coef(cvfit, s = "lambda.1se")
-  nonzero_coefs <- coefs[coefs[, 1] != 0, ]
-  sort(nonzero_coefs, decreasing = TRUE)
-  names(nonzero_coefs)
-  })
-names(nonzero_coefs) <- repeat_ids
-
-transposed_df <- stack(nonzero_coefs)
-# Split the data by feature name, grouping all indices by feature
-transposed_list <- split(transposed_df$ind, transposed_df$values)
-
-require(UpSetR)
-upset(fromList(transposed_list), nsets=length(transposed_list), order.by = "freq", nintersects = NA)
-```
-
-
-```{r, fit-lm}
-new_predictors <- Reduce(intersect, nonzero_coefs) # names(nonzero_coefs)[names(nonzero_coefs) != "(Intercept)"]
-new_predictors <- new_predictors[new_predictors != "(Intercept)"]
-linear_model <- lm(as.formula(paste(response_variable, "~",  paste(paste0("`", new_predictors, "`"), collapse= " + "))), 
-   data = enable_data |> mutate(across(all_of(new_predictors), ~ ifelse(is.na(.), mean(., na.rm = TRUE), .))))
-summary(linear_model)
-```
 
