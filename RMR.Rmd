@@ -206,7 +206,7 @@ recipe_list <- list(# basic = basic_recipe,
                     origScale = orig_scale_recipe)
 
 main_metric <- "rsq"
-my_metrics <- metric_set(rmse, ccc, rsq, mae)
+my_metrics <- metric_set(rmse, ccc, rsq, rsq_trad, mae)
 
 # linear model
 lm_model <- 
@@ -497,14 +497,59 @@ best_models_per_split <- lapply(names(cv_results), function(this_split_name){
 names(best_models_per_split) <- names(cv_results)
 ```
 
-### Evaluate Best Lasso Coefficients
 
-```{r, tidy-lasso-coefs}
-# LASSO can be used for feature selection only, so now we will build a more complex model with the selected variables from LASSO
-normalized_lasso_coefs <- best_models_per_split$repeated$normalized_lasso |> extract_fit_parsnip() |> tidy() |> subset(estimate != 0) |> mutate(abs_estimate = abs(estimate)) |> arrange(desc(abs_estimate)) |> select(-abs_estimate)
-print(normalized_lasso_coefs)
-normalized_lasso_coefs <- normalized_lasso_coefs |> subset(term != '(Intercept)')
-normalized_lasso_coefs[, term:=factor(term, levels=term)]
+### Evaluate LASSO Feature Robustness
+
+```{r, lasso-robustness, fig.width=8, fig.height=8}
+library(glmnet)
+
+# prepare x and y 
+prepped_training_data <- orig_scale_recipe |> step_select(c(all_predictors(), all_outcomes())) |> prep() |> bake(NULL)
+x <- prepped_training_data |> select(-any_of(response_variable)) |> as.matrix()
+y <- prepped_training_data |> pull(response_variable)
+
+# get the repeats from our repeated split
+repeat_ids <- repeated_cv_split$id |> unique()
+
+# lasso runs per repeat
+cvfits <- 
+  lapply(repeat_ids, function(repeat_id) {
+  # Filter the splits for the specified repeat
+  repeat_splits <- repeated_cv_split |> subset(id == repeat_id)
+  
+  # Initialize a fold ID vector (length = number of rows in the data)
+  fold_ids <- integer(train_data |> nrow())
+  
+  # Assign fold numbers to each observation based on assessment sets
+  for (i in seq_along(repeat_splits$splits)) {
+    fold <- repeat_splits$splits[[i]]
+    assessment_indices <- tidy(fold) |> subset(Data == "Assessment") |> pull(Row)
+    fold_ids[assessment_indices] <- i  # Assign fold number `i` to assessment indices
+  }
+  stopifnot(all(fold_ids>0))
+  
+  lasso <-
+    cv.glmnet(
+      x = x,
+      y = y,
+      alpha = 1,
+      family = "gaussian",
+      foldid = fold_ids,
+      standardize = TRUE
+    )
+  
+  lasso
+}) 
+names(cvfits) <- repeat_ids
+
+nonzero_coefs <- lapply(cvfits, function(cvfit) {
+  # get the nonzero coefficients
+  coefs <- coef(cvfit, s = "lambda.1se")
+  nonzero_coefs <- coefs[coefs[, 1] != 0, ]
+  sort(nonzero_coefs, decreasing = TRUE)
+  names(nonzero_coefs)
+  })
+names(nonzero_coefs) <- repeat_ids
 
 feature_colors <- c(
   "FFM_SECA,kg" = "#009999",          # Teal (greenish for FFM_SECA)
@@ -516,6 +561,25 @@ feature_colors <- c(
   "unexplained" = "#db6d00",         # Orange (for unexplained)
   "individual variation" = "#FDB462" # Light Orange (for individual variation)
 )
+
+transposed_df <- stack(nonzero_coefs)
+# remove intercept from values
+transposed_df <- data.table::setDT(transposed_df) |> subset(values != "(Intercept)")
+ggplot(transposed_df, aes(x = reorder(values, ind, function(x) -length(x)), fill = values)) +
+  geom_bar() +
+  scale_fill_manual(values = feature_colors) +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1), legend.position = 'none') +
+  labs(title = "LASSO Feature Robustness", x = "Feature", y = "Count")
+```
+
+### Evaluate Best Lasso Coefficients
+
+```{r, tidy-lasso-coefs}
+# LASSO can be used for feature selection only, so now we will build a more complex model with the selected variables from LASSO
+normalized_lasso_coefs <- best_models_per_split$repeated$normalized_lasso |> extract_fit_parsnip() |> tidy() |> subset(estimate != 0) |> mutate(abs_estimate = abs(estimate)) |> arrange(desc(abs_estimate)) |> select(-abs_estimate)
+print(normalized_lasso_coefs)
+normalized_lasso_coefs <- normalized_lasso_coefs |> subset(term != '(Intercept)')
+normalized_lasso_coefs[, term:=factor(term, levels=term)]
 
 # Function to calculate luminance
 calculate_luminance <- function(hex_color) {
@@ -549,116 +613,58 @@ print(selected_coefs)
 ```
 
 
-### Evaluate LASSO Feature Robustness
-
-```{r, lasso-robustness, fig.width=8, fig.height=8}
-library(glmnet)
-# library(sparsegl)
-
-# prepare x and y 
-prepped_training_data <- orig_scale_recipe |> step_select(c(all_predictors(), all_outcomes())) |> prep() |> juice()
-
-x <- prepped_training_data |> select(-any_of(response_variable)) |> as.matrix()
-y <- prepped_training_data |> pull(all_of(response_variable))
-
-# clean predictor names
-clean_predictors <- gsub("^`|`$", "", colnames(x))
-data.table::setkey(column_groups, 'column')
-mapping_dt <- column_groups[clean_predictors]
-na_mapping <-
-  sapply(mapping_dt[is.na(group), column], function(pred)
-    column_groups[column_groups$column[startsWith(pred, column_groups$column)], group])
-mapping_dt[is.na(group), group := na_mapping[column]]
-mapping_dt[, group_id := as.integer(factor(group))]
-
-repeat_ids <- repeated_cv_split$id |> unique()
-grouping_weights <- seq(.05, .95, by = .1)
-
-# lasso test:
-cvfits <- #pbmcapply::pbmc
-  lapply(repeat_ids, function(repeat_id) {
-  # Filter the splits for the specified repeat
-  repeat_splits <- repeated_cv_split |> subset(id == repeat_id)
-  
-  # Initialize a fold ID vector (length = number of rows in the data)
-  fold_ids <- integer(train_data |> nrow())
-  
-  # Assign fold numbers to each observation based on assessment sets
-  for (i in seq_along(repeat_splits$splits)) {
-    fold <- repeat_splits$splits[[i]]
-    assessment_indices <- tidy(fold) |> subset(Data == "Assessment") |> pull(Row)
-    fold_ids[assessment_indices] <- i  # Assign fold number `i` to assessment indices
-  }
-  stopifnot(all(fold_ids>0))
-  # compute sgl
-  # sgls <- pbmcapply::pbmclapply(grouping_weights, function(grouping_weight) {
-  #   sgl <- cv.sparsegl(
-  #     x = x,
-  #     y = y,
-  #     group = mapping_dt[, group_id],
-  #     asparse = grouping_weight,
-  #     foldid = fold_ids
-  #   )
-  # }, mc.cores = length(grouping_weights))
-  # names(sgls) <- grouping_weights
-  # best_sgls <-
-  #   data.table::rbindlist(sapply(sgls, function(x)
-  #     summary(x)$table["lambda.1se", ], simplify = FALSE),
-  #     idcol = 'grouping_weight')
-  # best_row <- best_sgls |>
-  #   mutate(min_cvm = min(cvm)) |>
-  #   filter(cvm <= min_cvm + cvsd) |>
-  #   arrange(nnzero, active_grps, desc(lambda)) |>
-  #   slice_head(n = 1)
-  # sgl_plot <- plot(sgl$sparsegl.fit, y_axis = "group", x_axis = "lambda", add_legend = TRUE)
-  # sgl_plot$data <- sgl_plot$data |>
-  #   mutate(group = setNames(mapping_dt$group, paste0("group", mapping_dt$group_id))[group])
-  # print(sgl_plot)
-  # compute lasso
-  lasso <-
-    cv.glmnet(
-      x = x,
-      y = y,
-      alpha = 1,
-      family = "gaussian",
-      foldid = fold_ids,
-      standardize = TRUE
-    )
-  
-  # print(plot(cvfit))
-  #list(lasso = lasso, sgl = sgls[[best_row$grouping_weight]])
-  lasso
-}) #, mc.cores = length(repeat_ids))
-names(cvfits) <- repeat_ids
-# sapply(cvfits, plot)
-nonzero_coefs <- lapply(cvfits, function(cvfit) {
-  # get the nonzero coefficients
-  coefs <- coef(cvfit, s = "lambda.1se")
-  nonzero_coefs <- coefs[coefs[, 1] != 0, ]
-  sort(nonzero_coefs, decreasing = TRUE)
-  names(nonzero_coefs)
-  })
-names(nonzero_coefs) <- repeat_ids
-
-transposed_df <- stack(nonzero_coefs)
-# Split the data by feature name, grouping all indices by feature
-transposed_list <- split(transposed_df$ind, transposed_df$values)
-
-require(UpSetR)
-upset(fromList(transposed_list), nsets=length(transposed_list), order.by = "freq", nintersects = NA)
-```
-
 ### Build More Complex Models
 
 ```{r, complex-models}
 selected_features <- selected_coefs |> subset(term != '(Intercept)') |> pull(term)
 
+lm_lasso <- lm(
+  formula = as.formula(paste(
+    response_variable,
+    "~",
+    paste0('`', selected_features, '`', collapse = ' + ')
+  )),
+  data = recipe_list$origScale |> step_select(all_of(c(all_predictors(), all_outcomes()))) |> prep() |> bake(NULL),
+  x = TRUE,
+  y = TRUE
+)
+lm_lasso_orig <- lm_lasso
+lm_lasso$coefficients <- selected_coefs$estimate
+names(lm_lasso$coefficients) <- names(lm_lasso_orig$coefficients)
+lm_lasso$fitted.values <- as.numeric(lm_lasso$x %*% lm_lasso$coefficients)
+names(lm_lasso$fitted.values) <- rownames(lm_lasso$x)
+lm_lasso$residuals <- lm_lasso$y - lm_lasso$fitted.values
+
+# Recompute residual standard error and R-squared
+rss <- sum(lm_lasso$residuals^2)  # Residual Sum of Squares
+tss <- sum((lm_lasso$y - mean(lm_lasso$y))^2)  # Total Sum of Squares
+mss <- sum((lm_lasso$fitted.values - mean(lm_lasso$fitted.values))^2)
+n <- nrow(lm_lasso$x)  # Number of observations
+p <- length(lm_lasso$coefficients)  # Number of predictors including intercept
+lm_lasso$df.residual <- n - p  # Degrees of freedom for residuals
+lm_lasso$sigma <- sqrt(rss / lm_lasso$df.residual)  # Residual standard error
+lm_lasso$r.squared <- 1 - (rss / tss)  # R-squared
+lm_lasso$adj.r.squared <- 1 - (1 - lm_lasso$r.squared) * ((n - 1) / lm_lasso$df.residual)  # Adjusted R-squared
+# Update effects
+lm_lasso$effects <- qr.qty(qr(lm_lasso$x), lm_lasso$y)
+
+# Update QR decomposition
+lm_lasso$qr <- qr(lm_lasso$x)
+
+# Validate assign field
+lm_lasso$assign <- attr(lm_lasso$terms, "assign")
+
+summary(lm_lasso)
 
 # now let's make another recipe using only those features
 selected_recipe <- orig_scale_recipe |>
   update_role(all_of(general_predictors), new_role = "old_predictor") |>
   update_role(all_of(microbiome_predictors), new_role = "old_predictor") |>
-  update_role(all_of(selected_features), new_role = "predictor") 
+  update_role(all_of(selected_features), new_role = "predictor") |>
+  update_role_requirements(role = "old_predictor", bake = FALSE) |>
+  update_role_requirements(role = "labels", bake = FALSE) |>
+  update_role_requirements(role = "microbiome", bake = FALSE) |>
+  update_role_requirements(role = "splitting indicator", bake = FALSE)
 
 quadratic_recipe <- selected_recipe |>
   step_poly(all_numeric_predictors(), degree = 2) 
@@ -691,14 +697,12 @@ selected_lm_fits <- sapply(new_models,
        function(model) {
          lm_fit <- model |> extract_fit_engine()
          coef_mat <- lm_fit |> summary() |> coefficients()
-         coef_mat[coef_mat[, 'Pr(>|t|)'] < 0.05, , drop = FALSE] |> print()
+         # coef_mat[coef_mat[, 'Pr(>|t|)'] < 0.05, , drop = FALSE] |> print()
          lm_fit
        }, simplify = FALSE)
-# anova(selected_lm_fits$selected_linear, selected_lm_fits$quadratic_linear)
-# anova(selected_lm_fits$quadratic_linear, selected_lm_fits$interaction_linear)
 
 feature_imps <- c("lmg", "pmvd")
-linear_imp <- relaimpo::calc.relimp(selected_lm_fits$selected_linear, type = feature_imps)
+linear_imp <- relaimpo::calc.relimp(lm_lasso, type = feature_imps)
 expl_variance <- data.table::setDT(enframe(c(linear_imp$pmvd, `individual variation` = 0.043, unexplained = 0), 'Feature', 'Explained Variance'))
 expl_variance[Feature == 'unexplained', `Explained Variance` := 1 - sum(expl_variance$`Explained Variance`)]
 expl_variance[, Feature:=factor(Feature, levels=c(names(sort(linear_imp$pmvd, decreasing = TRUE)), 'unexplained', 'individual variation'))]
@@ -786,61 +790,115 @@ WHO <- function(weight, age, sex_female) {
 
 ## Compute Training and Testing Errors
 
-### Training Errors
-
-```{r, training-errors, fig.width=12, fig.height=6}
-training_preds <-
+```{r, helper-functions}
+predict_data_fits <- function(fits, recipe_list, truth, new_data = NULL) {
   data.table::rbindlist(
-    sapply(names(best_models_per_split$repeated), function(this_wflow_id) {
-      last_fit <- best_models_per_split$repeated[[this_wflow_id]]
+    sapply(names(fits), function(this_wflow_id) {
+      last_fit <- fits[[this_wflow_id]]
       this_recipe_name <- sub(pattern = '_.*$', replacement = '', this_wflow_id)
       this_recipe <- recipe_list[[this_recipe_name]]
-      prepped_training_data <- this_recipe |> step_select(all_of(c(all_predictors(), all_outcomes()))) |> prep() |> juice()
-      last_fit |> extract_fit_parsnip() |> predict(new_data = prepped_training_data) |> bind_cols(train_data |> select(all_of(response_variable)))
+      prepped_data <- this_recipe |> step_select(all_of(c(all_predictors(), all_outcomes()))) |> prep() |> bake(new_data = new_data)
+      last_fit |> extract_fit_parsnip() |> predict(new_data = prepped_data) |> mutate(truth = truth)
     }, simplify = FALSE),
     idcol = 'model'
-  ) |> rename(truth = RMR.KJ, estimate = .pred)
+  ) |> rename(estimate = .pred)
+}
 
-training_preds <- data.table::rbindlist(list(
-  data.table::data.table(model = 'Harris-Benedict', 
-                         estimate = HarrisBenedict(weight = train_data$`GEWICHt_SECA, kg`,
-                                                   height = train_data$`GROESSE, cm`,
-                                                   age = train_data$`Alter, Jahre`,
-                                                   train_data$SEX == 'weiblich'),
-                         truth = train_data$RMR.KJ),
-  data.table::data.table(model = 'Kleiber', 
-                         estimate = Kleiber(weight = train_data$`GEWICHt_SECA, kg`),
-                         truth = train_data$RMR.KJ),
-  data.table::data.table(model = 'WHO', 
-                         estimate = WHO(weight = train_data$`GEWICHt_SECA, kg`, 
-                                        age = train_data$`Alter, Jahre`,
-                                        sex_female = train_data$SEX == 'weiblich'),
-                         truth = train_data$RMR.KJ),
-  training_preds
-))
+predict_data_established <- function(new_data, truth){
+  data.table::rbindlist(list(
+    data.table::data.table(model = 'Harris-Benedict', 
+                           estimate = HarrisBenedict(weight = new_data$`GEWICHt_SECA, kg`,
+                                                     height = new_data$`GROESSE, cm`,
+                                                     age = new_data$`Alter, Jahre`,
+                                                     new_data$SEX == 'weiblich'),
+                           truth = truth),
+    data.table::data.table(model = 'Kleiber', 
+                           estimate = Kleiber(weight = new_data$`GEWICHt_SECA, kg`),
+                           truth = truth),
+    data.table::data.table(model = 'WHO', 
+                           estimate = WHO(weight = new_data$`GEWICHt_SECA, kg`, 
+                                          age = new_data$`Alter, Jahre`,
+                                          sex_female = new_data$SEX == 'weiblich'),
+                           truth = truth)
+    )
+  )
+}
 
-train_metrics <- training_preds[, my_metrics(.SD, truth = truth, estimate = estimate), by=model]
-train_metrics <- data.table::dcast(train_metrics, model ~ .metric, value.var = '.estimate')
-metric_names <- names(train_metrics)[names(train_metrics) != 'model']
-train_metrics[, metrics_string := do.call(
-    paste, 
-    c(Map(function(name, value) paste(name, round(value, 2), sep = ": "), metric_names, mget(metric_names)), sep = "\n")
-)]
+compute_my_metrics <- function(preds, my_metrics){
+  metric_dt <- preds[, my_metrics(.SD, truth = truth, estimate = estimate), by=model]
+  metric_dt <- data.table::dcast(metric_dt, model ~ .metric, value.var = '.estimate')
+  metric_names <- names(metric_dt)[names(metric_dt) != 'model']
+  metric_dt[, metrics_string := do.call(
+      paste, 
+      c(Map(function(name, value) paste(name, round(value, 2), sep = ": "), metric_names, mget(metric_names)), sep = "\n")
+  )]
+  metric_dt
+}
 
-ggplot(training_preds, aes(x = truth, y = estimate)) +
-  geom_abline(color = "gray50", lty = 2) + 
-  geom_point(alpha = 0.5) + 
-  facet_wrap(~factor(model, levels = train_metrics[order(get(main_metric)), model]), nrow = 2) +
-  coord_obs_pred() +
-  labs(title = 'Training Errors', x = 'Observed', y = 'Predicted') +
-  geom_label(data = train_metrics, aes(x = Inf, y = -Inf, label = metrics_string), 
-             hjust = 1.1, vjust = -0.1, inherit.aes = FALSE, size = 3)
+plot_preds <- function(preds, metric_dt, main_metric, focus_observed = FALSE){
+  p <- ggplot(preds, aes(x = truth, y = estimate)) +
+    geom_abline(color = "gray50", lty = 2) + 
+    geom_point(alpha = 0.5) + 
+    facet_wrap(~factor(model, levels = metric_dt[order(get(main_metric)), model]), nrow = 2) +
+    labs(title = 'Errors', x = 'Observed', y = 'Predicted') +
+    geom_label(data = metric_dt, aes(x = Inf, y = -Inf, label = metrics_string), 
+               hjust = 1.1, vjust = -0.1, inherit.aes = FALSE, size = 3)
+  if (focus_observed) {
+    p <- p +
+      coord_obs_pred(xlim=c(min(preds$truth), max(preds$truth)),
+                     ylim=c(min(preds$truth), max(preds$truth)))
+          
+  } else {
+    p <- p +
+      coord_obs_pred()
+  }
+  p
+}
+
+plot_bland_altman <- function(preds, metric_dt, main_metric) {
+  preds[, mean_measurement:=(truth + estimate)/2]
+  preds[, difference:= truth - estimate]
+  preds[, mean_difference:=mean(difference), by=model]
+  preds[, lower_difference:= mean_difference - sd(difference)*1.96, by=model]
+  preds[, upper_difference:= mean_difference + sd(difference)*1.96, by=model]
+  
+  ggplot(preds, aes(x = mean_measurement, y = difference)) +
+    geom_hline(aes(yintercept = mean_difference)) +
+    geom_hline(aes(yintercept = lower_difference), linetype = 'dashed') +
+    geom_hline(aes(yintercept = upper_difference), linetype = 'dashed') +
+    geom_point(alpha = 0.5) + 
+    facet_wrap(~factor(model, levels = metric_dt[order(get(main_metric)), model]), nrow = 2) +
+    labs(title = 'Bland-Altman', x = 'Mean Measurement', y = 'Difference')
+}
+
 
 ```
 
-### Testing Errors
-```{r, testing-errors, fig.width=12, fig.height=6}
-testing_preds <-
+
+### Freising/Training Errors
+
+```{r, training-errors, fig.width=12, fig.height=6}
+interesting_models <- c("Harris-Benedict", "Kleiber", "WHO", "origScale_lasso")
+
+freising_preds <- predict_data_fits(fits = best_models_per_split$repeated, 
+                                    recipe_list = recipe_list, 
+                                    truth = train_data$RMR.KJ)
+  
+freising_preds <- rbind(
+  freising_preds,
+  predict_data_established(train_data, train_data$RMR.KJ)
+)
+
+freising_metrics <- compute_my_metrics(freising_preds, my_metrics)
+
+plot_preds(freising_preds, freising_metrics, main_metric = main_metric)
+
+plot_bland_altman(freising_preds, freising_metrics, main_metric)
+```
+
+### Nürnberg/Testing Errors
+```{r, nuremberg-testing-errors, fig.width=12, fig.height=6}
+nuremberg_preds <-
   data.table::rbindlist(
     sapply(
       best_models_per_split$repeated,
@@ -850,62 +908,51 @@ testing_preds <-
     idcol = 'model'
   ) |> rename(truth = RMR.KJ, estimate = .pred) |> select(model, estimate, truth) 
 
-existing_preds <- data.table::rbindlist(list(
-  data.table::data.table(model = 'Harris-Benedict', 
-                         estimate = HarrisBenedict(weight = test_data$`GEWICHt_SECA, kg`,
-                                                   height = test_data$`GROESSE, cm`,
-                                                   age = test_data$`Alter, Jahre`,
-                                                   test_data$SEX == 'weiblich'),
-                         truth = test_data$RMR.KJ),
-  data.table::data.table(model = 'Kleiber', 
-                         estimate = Kleiber(weight = test_data$`GEWICHt_SECA, kg`),
-                         truth = test_data$RMR.KJ),
-  data.table::data.table(model = 'WHO', 
-                         estimate = WHO(weight = test_data$`GEWICHt_SECA, kg`, 
-                                        age = test_data$`Alter, Jahre`,
-                                        sex_female = test_data$SEX == 'weiblich'),
-                         truth = test_data$RMR.KJ)
-))
-existing_metrics <- existing_preds[, my_metrics(.SD, truth = truth, estimate = estimate), by=model]
-existing_metrics <- data.table::dcast(existing_metrics, model ~ .metric, value.var = '.estimate')
+nuremberg_preds <- rbind(
+  nuremberg_preds,
+  predict_data_established(test_data, test_data$RMR.KJ)
+)
 
-testing_metrics <-
-  data.table::rbindlist(
-    sapply(
-      best_models_per_split$repeated,
-      collect_metrics,
-      type='wide',
-      simplify = FALSE
-    ),
-    idcol = 'model'
-  ) |> select(-.config) 
-testing_preds <- rbind(existing_preds, testing_preds)
-testing_metrics <- rbind(existing_metrics, testing_metrics)
+nuremberg_metrics <- compute_my_metrics(nuremberg_preds, my_metrics)
 
-metric_names <- names(testing_metrics)[names(testing_metrics) != 'model']
-testing_metrics[, metrics_string := do.call(
-    paste, 
-    c(Map(function(name, value) paste(name, round(value, 2), sep = ": "), metric_names, mget(metric_names)), sep = "\n")
-)]
+plot_preds(nuremberg_preds, nuremberg_metrics, main_metric = main_metric)
 
-ggplot(testing_preds, aes(x = truth, y = estimate)) +
-  geom_abline(color = "gray50", lty = 2) + 
-  geom_point(alpha = 0.5) + 
-  facet_wrap(~factor(model, levels = testing_metrics[order(get(main_metric)), model]), nrow = 2) +
-  coord_obs_pred() +
-  labs(title = 'Testing Errors', x = 'Observed', y = 'Predicted') +
-  geom_label(data = testing_metrics, aes(x = Inf, y = -Inf, label = metrics_string), 
-             hjust = 1.1, vjust = -0.1, inherit.aes = FALSE, size = 3)
-ggplot(testing_preds, aes(x = truth, y = estimate)) +
-  geom_abline(color = "gray50", lty = 2) + 
-  geom_point(alpha = 0.5) + 
-  facet_wrap(~factor(model, levels = testing_metrics[order(get(main_metric)), model]), nrow = 2) +
-  coord_obs_pred(xlim=c(min(testing_preds$truth), max(testing_preds$truth)),
-                 ylim=c(min(testing_preds$truth), max(testing_preds$truth))) +
-  labs(title = 'Testing Errors', x = 'Observed', y = 'Predicted') +
-  geom_label(data = testing_metrics, aes(x = Inf, y = -Inf, label = metrics_string), 
-             hjust = 1.1, vjust = -0.1, inherit.aes = FALSE, size = 3)
+plot_preds(nuremberg_preds, nuremberg_metrics, main_metric = main_metric, focus_observed = TRUE)
+plot_bland_altman(nuremberg_preds, nuremberg_metrics, main_metric)
+
+plot_preds(nuremberg_preds[model %in% interesting_models], nuremberg_metrics[model %in% interesting_models], main_metric = main_metric)
+plot_bland_altman(nuremberg_preds[model %in% interesting_models], nuremberg_metrics, main_metric)
 ```
 
 
+### München/Testing Errors
+```{r, munich-testing-errors, fig.width=12, fig.height=6}
+munich_data <- data.table::setDT(readxl::read_xlsx('data/RMR_munich.xlsx'))
+munich_data[, `GEWICHt_SECA, kg` := fm + ffm]
+munich_data[, `FFM_SECA,kg` := ffm]
+munich_data[, `Alter, Jahre` := age]
+munich_data[, SEX := ifelse(sex == 2, yes = 'weiblich', no = 'männlich')]
+munich_data[, SEX := factor(SEX, levels = c('männlich', 'weiblich'))]
+munich_data[, (names(enable_data)[!names(enable_data) %in% names(munich_data)]) := NA]
+
+munich_preds <- predict_data_fits(fits = best_models_per_split$repeated,
+                                  recipe_list = recipe_list, 
+                                  truth = munich_data$RMR.KJ,
+                                  new_data = munich_data)
+
+munich_preds <- rbind(
+  munich_preds,
+  predict_data_established(munich_data, munich_data$RMR.KJ)
+)
+
+munich_metrics <- compute_my_metrics(munich_preds, my_metrics)
+
+plot_preds(munich_preds, munich_metrics, main_metric = main_metric)
+
+plot_preds(munich_preds, munich_metrics, main_metric = main_metric, focus_observed = TRUE)
+plot_bland_altman(munich_preds, munich_metrics, main_metric)
+
+plot_preds(munich_preds[model %in% interesting_models], munich_metrics[model %in% interesting_models], main_metric = main_metric)
+plot_bland_altman(munich_preds[model %in% interesting_models], munich_metrics[model %in% interesting_models], main_metric)
+```
 
