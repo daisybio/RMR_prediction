@@ -618,44 +618,6 @@ print(selected_coefs)
 ```{r, complex-models}
 selected_features <- selected_coefs |> subset(term != '(Intercept)') |> pull(term)
 
-lm_lasso <- lm(
-  formula = as.formula(paste(
-    response_variable,
-    "~",
-    paste0('`', selected_features, '`', collapse = ' + ')
-  )),
-  data = recipe_list$origScale |> step_select(all_of(c(all_predictors(), all_outcomes()))) |> prep() |> bake(NULL),
-  x = TRUE,
-  y = TRUE
-)
-lm_lasso_orig <- lm_lasso
-lm_lasso$coefficients <- selected_coefs$estimate
-names(lm_lasso$coefficients) <- names(lm_lasso_orig$coefficients)
-lm_lasso$fitted.values <- as.numeric(lm_lasso$x %*% lm_lasso$coefficients)
-names(lm_lasso$fitted.values) <- rownames(lm_lasso$x)
-lm_lasso$residuals <- lm_lasso$y - lm_lasso$fitted.values
-
-# Recompute residual standard error and R-squared
-rss <- sum(lm_lasso$residuals^2)  # Residual Sum of Squares
-tss <- sum((lm_lasso$y - mean(lm_lasso$y))^2)  # Total Sum of Squares
-mss <- sum((lm_lasso$fitted.values - mean(lm_lasso$fitted.values))^2)
-n <- nrow(lm_lasso$x)  # Number of observations
-p <- length(lm_lasso$coefficients)  # Number of predictors including intercept
-lm_lasso$df.residual <- n - p  # Degrees of freedom for residuals
-lm_lasso$sigma <- sqrt(rss / lm_lasso$df.residual)  # Residual standard error
-lm_lasso$r.squared <- 1 - (rss / tss)  # R-squared
-lm_lasso$adj.r.squared <- 1 - (1 - lm_lasso$r.squared) * ((n - 1) / lm_lasso$df.residual)  # Adjusted R-squared
-# Update effects
-lm_lasso$effects <- qr.qty(qr(lm_lasso$x), lm_lasso$y)
-
-# Update QR decomposition
-lm_lasso$qr <- qr(lm_lasso$x)
-
-# Validate assign field
-lm_lasso$assign <- attr(lm_lasso$terms, "assign")
-
-summary(lm_lasso)
-
 # now let's make another recipe using only those features
 selected_recipe <- orig_scale_recipe |>
   update_role(all_of(general_predictors), new_role = "old_predictor") |>
@@ -702,7 +664,7 @@ selected_lm_fits <- sapply(new_models,
        }, simplify = FALSE)
 
 feature_imps <- c("lmg", "pmvd")
-linear_imp <- relaimpo::calc.relimp(lm_lasso, type = feature_imps)
+linear_imp <- relaimpo::calc.relimp(selected_lm_fits$selected_linear, type = feature_imps)
 expl_variance <- data.table::setDT(enframe(c(linear_imp$pmvd, `individual variation` = 0.043, unexplained = 0), 'Feature', 'Explained Variance'))
 expl_variance[Feature == 'unexplained', `Explained Variance` := 1 - sum(expl_variance$`Explained Variance`)]
 expl_variance[, Feature:=factor(Feature, levels=c(names(sort(linear_imp$pmvd, decreasing = TRUE)), 'unexplained', 'individual variation'))]
@@ -921,18 +883,29 @@ plot_preds(nuremberg_preds, nuremberg_metrics, main_metric = main_metric, focus_
 plot_bland_altman(nuremberg_preds, nuremberg_metrics, main_metric)
 
 plot_preds(nuremberg_preds[model %in% interesting_models], nuremberg_metrics[model %in% interesting_models], main_metric = main_metric)
-plot_bland_altman(nuremberg_preds[model %in% interesting_models], nuremberg_metrics, main_metric)
+```
+
+
+```{r, nuremberg-testing-ba, fig.width=12, fig.height=4}
+nuremberg_ba <- plot_bland_altman(nuremberg_preds[model %in% interesting_models], nuremberg_metrics, main_metric)
+nuremberg_ba[["facet"]][["params"]][["nrow"]] <- 1
+nuremberg_ba
 ```
 
 
 ### München/Testing Errors
 ```{r, munich-testing-errors, fig.width=12, fig.height=6}
 munich_data <- data.table::setDT(readxl::read_xlsx('data/RMR_munich.xlsx'))
-munich_data[, `GEWICHt_SECA, kg` := fm + ffm]
+munich_data_extension <- data.table::setDT(readxl::read_xlsx('data/Datenbank_GU_Daten an Frau Keppner_22.02.2019.xlsx'))
+# munich_data[, `GEWICHt_SECA, kg` := fm + ffm]
+munich_data[munich_data_extension, on=c(Label='ID'), c('GROESSE, cm', 'GEWICHt_SECA, kg', 'SEX') :=.(Größe, Gewicht, Geschl)]
 munich_data[, `FFM_SECA,kg` := ffm]
 munich_data[, `Alter, Jahre` := age]
+# munich_data[, SEX := paste0(SEX, 'ich')]
 munich_data[, SEX := ifelse(sex == 2, yes = 'weiblich', no = 'männlich')]
-munich_data[, SEX := factor(SEX, levels = c('männlich', 'weiblich'))]
+munich_data[, SEX := factor(SEX, levels = levels(enable_data$SEX))]
+munich_data[, Site:='munich']
+
 munich_data[, (names(enable_data)[!names(enable_data) %in% names(munich_data)]) := NA]
 
 munich_preds <- predict_data_fits(fits = best_models_per_split$repeated,
@@ -953,6 +926,17 @@ plot_preds(munich_preds, munich_metrics, main_metric = main_metric, focus_observ
 plot_bland_altman(munich_preds, munich_metrics, main_metric)
 
 plot_preds(munich_preds[model %in% interesting_models], munich_metrics[model %in% interesting_models], main_metric = main_metric)
-plot_bland_altman(munich_preds[model %in% interesting_models], munich_metrics[model %in% interesting_models], main_metric)
+```
+
+
+```{r, munich-testing-ba, fig.width=12, fig.height=4}
+munich_ba <- plot_bland_altman(munich_preds[model %in% interesting_models], munich_metrics[model %in% interesting_models], main_metric)
+munich_ba[["facet"]][["params"]][["nrow"]] <- 1
+munich_ba
+```
+
+```{r}
+all_data <- rbind(enable_data[, .(Site, mean_temp, RMR.KJ, SEX, `Alter, Jahre`)], munich_data[, .(Site, mean_temp, RMR.KJ, SEX, `Alter, Jahre`)])
+ggplot(rbind(enable_data[, .(Site, mean_temp, RMR.KJ)], munich_data[, .(Site, mean_temp, RMR.KJ)]), aes(x = mean_temp, y = RMR.KJ, color = Site)) + geom_point(alpha=.5) + geom_smooth(method = 'lm', se = FALSE)
 ```
 
