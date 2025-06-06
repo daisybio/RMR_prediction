@@ -409,7 +409,10 @@ if (file.exists(repeated_cv_result_file)) {
       resamples = repeated_cv_split,
       grid = grid_size,
       verbose = TRUE,
-      metrics = my_metrics
+      metrics = my_metrics,
+      control = control_grid(
+        save_pred = TRUE
+      )
     )
   saveRDS(repeated_cv_result, repeated_cv_result_file)
 }
@@ -766,6 +769,7 @@ rounding_by <- c(
 )
 interesting_metricmap <- setNames(names(interesting_metrics), interesting_metrics)
 
+
 predict_data_fits <- function(fits, recipe_list, truth, new_data = NULL) {
   data.table::rbindlist(
     sapply(names(fits), function(this_wflow_id) {
@@ -799,14 +803,35 @@ predict_data_established <- function(new_data, truth){
   )
 }
 
-compute_my_metrics <- function(preds, my_metrics, metrics_to_keep){
+compute_my_metrics <- function(preds, my_metrics, metrics_to_keep, n_bootstrap_samples = 10000, seed = 4735684){
   metric_dt <- preds[, my_metrics(.SD, truth = truth, estimate = estimate), by=model]
-  metric_dt <- data.table::dcast(metric_dt, model ~ .metric, value.var = '.estimate')
-  data.table::setnames(metric_dt, old = metrics_to_keep, new = names(metrics_to_keep))
-  metric_dt[, metrics_string := do.call(
-      paste, 
-      c(Map(function(name, value) paste(name, round(value, rounding_by[name]), sep = ": "), names(metrics_to_keep), mget(names(metrics_to_keep))), sep = "\n ")
-  )]
+  if (n_bootstrap_samples > 0) {
+    set.seed(seed)
+    # # data.table only solution is too slow
+    # # Get sizes per model
+    # model_sizes <- preds[ , .N, by = model]
+    # # Create bootstrap sample indices
+    # boot_dt <- model_sizes[ , .(
+    #   bootstrap_ind = rep(1:n_bootstrap_samples, each = N),
+    #   row_id = sample(seq.int(N), size = N * n_bootstrap_samples, replace = TRUE)
+    # ), by = model]
+    # # Now compute metrics per bootstrap sample
+    # bootstrap_metrics <- boot_dt[preds, on = .(model, row_id)][ , my_metrics(.SD, truth = truth, estimate = estimate), by = .(bootstrap_ind, model)]
+    
+    bootstrap_indices <- replicate(n_bootstrap_samples, sample(preds[ , .N, by = model][, unique(N)], replace = TRUE), simplify = FALSE)
+    bootstrap_metrics <- data.table::rbindlist(pbmcapply::pbmclapply(bootstrap_indices, function(indices) {
+      preds[ , my_metrics(.SD[indices], truth = truth, estimate = estimate), by=model]
+    }, mc.cores = min(n_bootstrap_samples/10, parallel::detectCores() / 2)), idcol = 'bootstrap_ind')
+    metric_dt <- rbind(metric_dt, bootstrap_metrics, use.names = TRUE, fill = TRUE)
+    # metric_int <- bootstrap_metrics[, .(lower = quantile(.estimate, 0 + ((1 - .9)/2)), mean = mean(.estimate), higher = quantile(.estimate, 1 - ((1 - .9)/2))), by = .(model, .metric)]
+    # metric_dt[metric_int, on = .NATURAL, c("lower", "mean", "higher") := .(lower, mean, higher)]
+  }
+  # metric_dt <- data.table::dcast(metric_dt, model ~ .metric, value.var = '.estimate')
+  # data.table::setnames(metric_dt, old = metrics_to_keep, new = names(metrics_to_keep))
+  # metric_dt[, metrics_string := do.call(
+  #     paste,
+  #     c(Map(function(name, value) paste(name, round(value, rounding_by[name]), sep = ": "), names(metrics_to_keep), mget(names(metrics_to_keep))), sep = "\n ")
+  # )]
   metric_dt
 }
 ```
@@ -842,6 +867,8 @@ metrics_by_site <- lapply(preds_by_site, compute_my_metrics, my_metrics = my_met
 
 pred_dt <- data.table::rbindlist(preds_by_site, idcol = 'Site')
 metric_dt <- data.table::rbindlist(metrics_by_site, idcol = 'Site')
+
+metric_dt[.metric %in% interesting_metrics, .metric := interesting_metricmap[.metric]]
 
 pred_dt[, Site := factor(Site, levels = c(all_data[, levels(Site)], "KielWoTemp"))]
 metric_dt[, Site := factor(Site, levels = c(all_data[, levels(Site)], "KielWoTemp"))]
@@ -894,45 +921,119 @@ ggsave(filename = file.path(fig_dir, "cv_summary.pdf"), width = 5, height = 4)
 
 ```{r, summary, fig.width=12, fig.height=8}
 require(tidytext)
-summary_metrics <- data.table::melt(metric_dt, id.vars = c('model', 'Site', 'metrics_string'), variable.name = 'metric_name', value.name = 'metric', variable.factor = FALSE)
+summary_metrics <- data.table::copy(metric_dt)
+summary_metrics[Site == "KielWoTemp", Site := "Kiel Without Temperature"]
+data.table::setnames(summary_metrics, c(".metric", ".estimate"), c("metric_name", "metric"))
 summary_metrics[grep("linear", model, ignore.case = TRUE), `Model Type` := "Linear"]
 summary_metrics[grep("lasso", model, ignore.case = TRUE), `Model Type` := "Lasso"]
 summary_metrics[model %in% established_models, `Model Type` := "Established"]
-score_summary <- ggplot(summary_metrics[model %in% interesting_modelmap & 
-                       metric_name %in% interesting_metricmap &
-                       Site %in% c("Freising", "Nuremberg", "Kiel")],
-      aes(
-          x = tidytext::reorder_within(model, metric, Site),
-          y = metric,
-          fill = `Model Type`
-        )) +
-        geom_col(color = 'white', alpha = 0.7) +
-        scale_fill_manual(values = model_type_colors) +
-        # add the value as text into the bar, ninety degrees rotated
-        geom_text(aes(label = round(metric, rounding_by[metric_name]), y = 0), hjust = -.15, angle = 90) +
-        facet_grid(metric_name ~ Site, scales = "free") +
-        labs(x = NULL, y = NULL) + 
-        tidytext::scale_x_reordered() + 
-        theme(axis.text.x = element_text(angle = 45, hjust = 1), legend.position = "top")
-ggsave(filename = file.path(fig_dir, "score_summary.pdf"), plot = score_summary, width = 7, height = 4)
 
-summary_metrics[Site == "KielWoTemp", Site := "Kiel Without Temperature"]
-score_summary_kiel <- ggplot(summary_metrics[model %in% interesting_modelmap[!interesting_modelmap %in% established_models] & 
-                       metric_name %in% interesting_metricmap &
-                       Site %in% c("Kiel", "Kiel Without Temperature")],
-      aes(
-          x = tidytext::reorder_within(model, metric, Site),
-          y = metric,
-          fill = `Model Type`
-        )) +
-        geom_col(color = 'white', alpha = 0.7) +
-        scale_fill_manual(values = model_type_colors) +
-        # add the value as text into the bar, ninety degrees rotated
-        geom_text(aes(label = round(metric, rounding_by[metric_name]), y = 0), hjust = -.15, angle = 90) +
-        facet_grid(metric_name ~ Site, scales = "free") +
-        labs(x = NULL, y = NULL) + 
-        tidytext::scale_x_reordered() + 
-        theme(axis.text.x = element_text(angle = 45, hjust = 1), legend.position = "none")
+wide_bootstrap_res <- data.table::dcast(summary_metrics, formula = Site + metric_name + bootstrap_ind ~ model, value.var = "metric")
+pairwise_comparisons <- data.table::CJ(model1 = ordered(interesting_modelmap, levels = interesting_modelmap), 
+                                       model2 = ordered(interesting_modelmap, levels = interesting_modelmap))[model1 < model2]
+pairwise_tests <- wide_bootstrap_res[, 
+                                     .(list = lapply(1:nrow(pairwise_comparisons), function(i){
+                                       m1 <- as.character(pairwise_comparisons[i, model1])
+                                       m2 <- as.character(pairwise_comparisons[i, model2])
+                                       delta <- get(m1) - get(m2)
+                                      
+                                      # Observed difference
+                                      delta_obs <- delta[is.na(bootstrap_ind)]
+                                      
+                                      # Bootstrap differences centered at their bootstrap mean
+                                      delta_star <- delta[!is.na(bootstrap_ind)]
+                                      delta_star_centered <- delta_star - mean(delta_star)
+                                      
+                                      # p-value: proportion of bootstrap differences >= observed difference
+                                      p_value <- mean(abs(delta_star_centered) >= abs(delta_obs))
+                                      
+                                       .(.y. = 'metric', 
+                                         p = p_value, 
+                                         mean_delta = mean(delta), 
+                                         group1 = m1, 
+                                         group2 = m2)
+                                     })), by = .(Site, metric_name)][, data.table::rbindlist(list), by = .(Site, metric_name)]
+
+
+# interesting_comparisons <- data.table(group1 = interesting_modelmap[-length(interesting_modelmap)], group2 = interesting_modelmap[-1])
+
+pairwise_tests[, group1 := paste(group1, Site, sep = "___")]
+pairwise_tests[, group2 := paste(group2, Site, sep = "___")]
+
+pairwise_tests_summary <- pairwise_tests[metric_name %in% interesting_metricmap &
+                                           Site %in% c("Freising", "Nuremberg", "Kiel")]
+pairwise_tests_summary[, p.adj :=  p.adjust(p, method = "BH"), by = .(Site, metric_name)]
+pairwise_tests_summary[, p.signif := as.character(stats::symnum(x = p.adj, 
+                                       cutpoints = c(0, 1e-04, 0.001, 0.01, 0.05, 1), 
+                                       symbols = c("****", "***", "**", "*", "ns")))]
+
+score_summary_metrics <- summary_metrics[model %in% interesting_modelmap &
+                                        metric_name %in% interesting_metricmap &
+                                        Site %in% c("Freising", "Nuremberg", "Kiel")]
+
+pairwise_tests_summary[score_summary_metrics[!is.na(bootstrap_ind), 
+                                     .(y.position = max(metric)), 
+                                     by = .(Site, metric_name)],
+               on = .NATURAL,
+               y.position := y.position]
+pairwise_tests_summary[, y.position := y.position + y.position * (.05 * (seq.int(.N) - 1)), by = .(Site, metric_name)]
+pairwise_tests_summary[metric_name == "RMSE", y.position := y.position - 200]
+
+
+score_summary <- ggplot(score_summary_metrics[!is.na(bootstrap_ind)],
+       aes(x = tidytext::reorder_within(model, metric, Site), y = metric)) +
+    geom_col(data = score_summary_metrics[is.na(bootstrap_ind)], aes(fill = `Model Type`), color = 'white', alpha = 0.7) +
+    stat_summary(fun.data = function(x) list(y = mean(x), ymin = quantile(x, 0 + ((1 - .9)/2)), ymax = quantile(x, 1 - ((1 - .9)/2))), 
+                 geom = "pointrange", fatten = 2) +
+    stat_pvalue_manual(pairwise_tests_summary, 
+                       label = "p.signif", tip.length = 0, size = 2) +
+    scale_fill_manual(values = model_type_colors) +
+    coord_cartesian(ylim = c(0, NA)) +
+    # add the value as text into the bar, ninety degrees rotated
+    geom_text(data = score_summary_metrics[is.na(bootstrap_ind)], aes(label = round(metric, rounding_by[metric_name]), y = 0), hjust = -.15, vjust = 1.4, angle = 90) +
+    facet_grid(metric_name ~ Site, scales = "free") +
+    labs(x = NULL, y = NULL) +
+    tidytext::scale_x_reordered() +
+    theme(axis.text.x = element_text(angle = 45, hjust = 1), legend.position = "left")
+ggsave(filename = file.path(fig_dir, "score_summary.pdf"), plot = score_summary, width = 8, height = 6)
+
+score_summary_metrics_kiel <- summary_metrics[model %in% interesting_modelmap[!interesting_modelmap %in% established_models] & 
+                                                metric_name %in% interesting_metricmap &
+                                                Site %in% c("Kiel", "Kiel Without Temperature")]
+
+pairwise_tests_summary_kiel <- 
+  pairwise_tests[grepl(pattern = paste(interesting_modelmap[!interesting_modelmap %in% established_models], collapse = "|"), x = group1) &
+                 grepl(pattern = paste(interesting_modelmap[!interesting_modelmap %in% established_models], collapse = "|"), x = group2) &
+                 metric_name %in% interesting_metricmap &
+                Site %in% c("Kiel", "Kiel Without Temperature")]
+
+pairwise_tests_summary_kiel[, p.signif := as.character(stats::symnum(x = p.adjust(p, method = "BH"), 
+                                       cutpoints = c(0, 1e-04, 0.001, 0.01, 0.05, 1), 
+                                       symbols = c("****", "***", "**", "*", "ns"))), 
+                       by = .(Site, metric_name)]
+
+
+
+pairwise_tests_summary_kiel[score_summary_metrics_kiel[!is.na(bootstrap_ind), 
+                                     .(y.position = max(metric)), 
+                                     by = .(Site, metric_name)],
+               on = .NATURAL,
+               y.position := y.position]
+pairwise_tests_summary_kiel[, y.position := y.position + y.position * (.05 * (seq.int(.N) - 1)), by = .(Site, metric_name)]
+
+score_summary_kiel <- ggplot(score_summary_metrics_kiel[!is.na(bootstrap_ind)],
+    aes(x = tidytext::reorder_within(model, metric, Site), y = metric)) +
+    geom_col(data = score_summary_metrics_kiel[is.na(bootstrap_ind)], aes(fill = `Model Type`), color = 'white', alpha = 0.7) +
+    stat_summary(fun.data = function(x) list(y = mean(x), ymin = quantile(x, 0 + ((1 - .9)/2)), ymax = quantile(x, 1 - ((1 - .9)/2))), 
+                 geom = "pointrange", fatten = 2) +
+    stat_pvalue_manual(pairwise_tests_summary_kiel, label = "p.signif", tip.length = 0, size = 2) +
+    scale_fill_manual(values = model_type_colors) +
+    # add the value as text into the bar, ninety degrees rotated
+    geom_text(data = score_summary_metrics_kiel[is.na(bootstrap_ind)], aes(label = round(metric, rounding_by[metric_name]), y = 0), hjust = -.15, angle = 90) +
+    facet_grid(metric_name ~ Site, scales = "free") +
+    labs(x = NULL, y = NULL) + 
+    tidytext::scale_x_reordered() + 
+    theme(axis.text.x = element_text(angle = 45, hjust = 1), legend.position = "none")
 ggsave(filename = file.path(fig_dir, "score_summary_kiel.pdf"), plot = score_summary_kiel, width = 4, height = 4)
 ```
 
@@ -1015,12 +1116,17 @@ pred_dt[, `BMI Category` := ordered(`BMI Category`, levels = bmi_mapping)]
 bmi_colors <- c("#7c7cbd", "#7c7cfd", "#7cfcfc", "#7cfc7c", "#fcfc7c", "#fcbb91", "#fc9192", "#c08081")
 names(bmi_colors) <- bmi_mapping
 
+metric_string_dt <- data.table::dcast(metric_dt[is.na(bootstrap_ind)], model + Site ~ .metric, value.var = '.estimate')[, metrics_string := do.call(
+    paste,
+    c(Map(function(name, value) paste(name, round(value, rounding_by[name]), sep = ": "), interesting_metricmap, mget(interesting_metricmap)), sep = "\n ")
+)]
+
 pred_obs <-
         plot_bland_altman(
           pred_dt[model %in% models &
                     Site %in% sites],
-          metric_dt[model %in% models &
-                      Site %in% sites],
+          metric_string_dt[model %in% models &
+                           Site %in% sites],
           main_metric = interesting_metricmap[main_metric],
           facet_col = "Site",
           facet_row = "model",
@@ -1062,8 +1168,8 @@ pred_plots <-
         plot_preds(
           pred_dt[model %in% models &
                     Site %in% sites],
-          metric_dt[model %in% models &
-                      Site %in% sites],
+          metric_string_dt[model %in% models &
+                           Site %in% sites],
           main_metric = interesting_metricmap[main_metric],
           facet_col = ifelse(length(sites) > 1, "Site", ""),
           facet_row = ifelse(length(models) > 1, "model", ""),
@@ -1075,8 +1181,8 @@ pred_plots <-
         plot_bland_altman(
           pred_dt[model %in% models &
                     Site %in% sites],
-          metric_dt = metric_dt[model %in% models &
-                                  Site %in% sites],
+          metric_string_dt[model %in% models &
+                           Site %in% sites],
           main_metric = interesting_metricmap[main_metric],
           facet_col = ifelse(length(sites) > 1, "Site", ""),
           facet_row = ifelse(length(models) > 1, "model", ""),
@@ -1092,9 +1198,9 @@ pred_plots <-
     SIMPLIFY = FALSE
   )
 pred_obs_freising <- pred_plots[[2]]$pred_obs
-pred_obs_score_summary <- ggarrange(pred_obs_freising, score_summary, widths = c(4,7), labels = c("A", "B"))
+pred_obs_score_summary <- ggarrange(pred_obs_freising, score_summary, widths = c(4,8), labels = c("A", "B"))
 pred_obs_score_summary
-ggsave(file = file.path(fig_dir, "pred_obs_score_summary.pdf"), plot = pred_obs_score_summary, width = 11, height = 4)
+ggsave(file = file.path(fig_dir, "pred_obs_score_summary.pdf"), plot = pred_obs_score_summary, width = 12, height = 6)
 ```
 
 
@@ -1166,8 +1272,13 @@ microbiome_cor_mat <- microbiome_cor_mat[order(microbiome_cor_mat[, "RMR"], decr
 colnames(microbiome_cor_mat)[colnames(microbiome_cor_mat) == "RMR"] <- "RMR (kJ/day)"
 write.table(microbiome_cor_mat, quote = FALSE, sep = ',')
 
+non_microbiome_cor_mat <- round(cor_mat[!rownames(cor_mat) %in% rownames(microbiome_cor_mat), "RMR", drop = FALSE], 3)
+non_microbiome_cor_mat <- non_microbiome_cor_mat[order(non_microbiome_cor_mat[, "RMR"], decreasing = TRUE), , drop=FALSE]
+colnames(non_microbiome_cor_mat)[colnames(non_microbiome_cor_mat) == "RMR"] <- "RMR (kJ/day)"
+write.table(non_microbiome_cor_mat, quote = FALSE, sep = ',')
+
 dist_obj = as.dist(1 - cor_mat)
-clust <- hclust(dist_obj, method = "ward.D2")
+clust <- hclust(dist_obj, method = "complete") # do not use "ward.D2" here, because we use correlation distance
 clust <-
   seriation:::reorder.hclust(clust, dist = dist_obj, method = "OLO")
 data.table::setkey(column_groups, column)
