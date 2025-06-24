@@ -1267,6 +1267,9 @@ cor_mat <-
   general_recipe |> step_select(c(all_predictors(), all_outcomes())) |> prep() |> bake(NULL) |> cor(use = "pairwise", method = cor_method)
 colnames(cor_mat)[colnames(cor_mat) == "Sex_weiblich"] <- "Sex (f)"
 rownames(cor_mat)[rownames(cor_mat) == "Sex_weiblich"] <- "Sex (f)"
+
+write.table(round(cor_mat[order(cor_mat[, "RMR"], decreasing = TRUE), "RMR", drop=FALSE], 3), quote=FALSE, sep=',')
+
 microbiome_cor_mat <- round(cor_mat[column_groups[group %in% c("microbiome family", "microbiome diversity"), column], "RMR", drop = FALSE], 3)
 microbiome_cor_mat <- microbiome_cor_mat[order(microbiome_cor_mat[, "RMR"], decreasing = TRUE), , drop=FALSE]
 colnames(microbiome_cor_mat)[colnames(microbiome_cor_mat) == "RMR"] <- "RMR (kJ/day)"
@@ -1276,6 +1279,8 @@ non_microbiome_cor_mat <- round(cor_mat[!rownames(cor_mat) %in% rownames(microbi
 non_microbiome_cor_mat <- non_microbiome_cor_mat[order(non_microbiome_cor_mat[, "RMR"], decreasing = TRUE), , drop=FALSE]
 colnames(non_microbiome_cor_mat)[colnames(non_microbiome_cor_mat) == "RMR"] <- "RMR (kJ/day)"
 write.table(non_microbiome_cor_mat, quote = FALSE, sep = ',')
+
+write.table(cor_mat, quote = FALSE, sep = ',')
 
 dist_obj = as.dist(1 - cor_mat)
 clust <- hclust(dist_obj, method = "complete") # do not use "ward.D2" here, because we use correlation distance
