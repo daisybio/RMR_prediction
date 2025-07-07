@@ -1263,6 +1263,7 @@ scatter_kiel_scores <- ggpubr:::.insert_xaxis_grob(scatter$sp, scatter$xplot, gr
 scatter_kiel_scores <- ggpubr:::.insert_yaxis_grob(scatter_kiel_scores, scatter$yplot, grid::unit(1/5, 
                                                  "null"), position = "right")
 scatter_kiel_scores <- ggarrange(as_ggplot(scatter_kiel_scores), score_summary_kiel, labels = c("A", "B"))
+print(scatter_kiel_scores)
 ggsave(filename = file.path(fig_dir, "scatter_temp_rmr_kiel_scores.pdf"), plot = scatter_kiel_scores, width = 14, height = 7)
 ```
 
