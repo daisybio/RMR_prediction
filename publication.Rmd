@@ -235,9 +235,13 @@ tidymodels_prefer()
 
 # number of NA responses
 message(paste("Number of NAs in response: ", all_data |> filter(is.na(get(response_variable))) |> nrow()))
+# number of NA responses per Site
+all_data[is.na(get(response_variable)), .N, by = Site]
+# remove rows with NA in response variable
 all_data <- all_data |> subset(!is.na(get(response_variable)))
 
-data.table::transpose(all_data[, c(n = .N, lapply(.SD, function(x) paste(round(mean(x, na.rm=TRUE), 2), round(sd(x, na.rm=TRUE), 2), sep = " ± "))), by=Site, .SDcols = c(age_predictor, "FM", "FFM", response_variable)], keep.names = 'Column', make.names = 'Site')
+rbind(data.table::transpose(all_data[, c(n = .N, lapply(.SD, function(x) paste(round(mean(x, na.rm=TRUE), 2), round(sd(x, na.rm=TRUE), 2), sep = " ± "))), by=Site, .SDcols = c(age_predictor, "FM", "FFM", response_variable)], keep.names = 'Column', make.names = 'Site'),
+      data.table::transpose(all_data[, as.list(table(get(sex_predictor))), by=Site], keep.names = 'Column', make.names = 'Site'))
 
 # set seed for reproducibility
 set.seed(1)
@@ -254,6 +258,9 @@ stopifnot(all(test_data$Site == 'Nuremberg'))
 message(paste("Number of NAs in any variable: ", train_data |>
   filter_all(any_vars(is.na(.))) |>
   nrow()))
+
+# report the number of NA's per column by Site
+data.table::fwrite(data.table::dcast(data.table::melt(all_data, id.vars = c("Label", "Site"), measure.vars = c(general_predictors, microbiome_predictors))[is.na(value), .N, by = .(variable, Site)], variable ~ Site, value.var = "N", fill = 0), "NAs_per_column.csv")
 
 # set number of folds and repeats
 nfolds <- 5
