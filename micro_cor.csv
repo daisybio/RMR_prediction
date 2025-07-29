@@ -1,0 +1,48 @@
+Microbiome family/diversity,Pearson correlation with RMR (kJ/day)
+f__Sutterellaceae,0.16
+f__Prevotellaceae,0.135
+f__unknown_ Bacteroidetes,0.129
+f__Succinivibrionaceae,0.111
+f__Acidaminococcaceae,0.107
+f__Coriobacteriaceae,0.103
+f__Erysipelotrichaceae,0.101
+f__Enterococcaceae,0.073
+f__Veillonellaceae,0.066
+f__Lachnospiraceae,0.052
+f__Pasteurellaceae,0.037
+f__Clostridiaceae 1,0.035
+f__Comamonadaceae,0.035
+f__Rhodospirillaceae,0.033
+f__Enterobacteriaceae,0.032
+f__Fusobacteriaceae,0.017
+f__Bifidobacteriaceae,0.014
+f__Peptococcaceae 1,0.011
+f__Eubacteriaceae,-0.003
+f__Peptostreptococcaceae,-0.01
+f__Spirochaetaceae,-0.011
+f__Lactobacillaceae,-0.022
+f__unknown_ Desulfovibrionales,-0.032
+f__Methanobacteriaceae,-0.036
+f__unknown_ Rhodospirillales,-0.036
+f__Puniceicoccaceae,-0.038
+f__Bacteroidaceae,-0.042
+f__unknown_ Proteobacteria,-0.057
+f__Streptococcaceae,-0.061
+f__unknown_ Alphaproteobacteria,-0.064
+f__Victivallaceae,-0.07
+f__unknown_ Burkholderiales,-0.072
+f__unknown_ Clostridia,-0.072
+f__Elusimicrobiaceae,-0.078
+f__Desulfovibrionaceae,-0.082
+f__Verrucomicrobiaceae,-0.097
+f__unknown_ Bacteroidales,-0.1
+f__Anaeroplasmataceae,-0.104
+f__unknown_ Deltaproteobacteria,-0.104
+f__unknown_ Bacteria,-0.122
+Simpson.effective,-0.128
+f__unknown_ Firmicutes,-0.136
+Shannon.effective,-0.147
+f__unknown_ Clostridiales,-0.156
+f__Rikenellaceae,-0.174
+f__Ruminococcaceae,-0.188
+f__Porphyromonadaceae,-0.219

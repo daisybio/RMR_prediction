@@ -1,0 +1,49 @@
+Non-microbial Features, Pearson correlation with RMR (kJ/day)
+RMR,1
+FFM,0.853
+Weight,0.722
+Height,0.706
+Hemoglobin,0.538
+Waist,0.493
+Hematocrit,0.484
+Uric Acid,0.471
+Visceral Fat,0.456
+MCHC,0.422
+fT3,0.404
+Hip,0.349
+GPT ALT,0.343
+Creatinine,0.334
+Ferritin,0.281
+Triglycerides,0.279
+GGT,0.251
+BP Diastolic,0.247
+Iron,0.204
+GFR,0.203
+BP Systolic,0.199
+propionic acid a,0.187
+Glucose,0.185
+FM,0.182
+GOT AST,0.171
+Insulin,0.159
+butyric acid a,0.12
+Urea,0.099
+acetic acid a,0.074
+Leukocytes,0.059
+Body Temperature,0.051
+TSH,0.043
+Heart Rate,0.035
+Isobutyrate a,0.022
+Isovalerate a,0.002
+LDH,-0.002
+2-Methylbutyrate a,-0.005
+pentanoic acid a,-0.009
+Lactic acid a,-0.019
+4-Methylvaleric acid a,-0.028
+LDL,-0.038
+hexanoic acid c,-0.039
+hsCRP,-0.058
+Mean Outdoor Temperature,-0.147
+Age,-0.184
+Cholesterol,-0.199
+HDL,-0.49
+Sex (f),-0.658
