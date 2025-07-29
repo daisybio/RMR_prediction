@@ -434,7 +434,7 @@ ggplot2::theme_set(ggplot2::theme_bw() + theme(strip.background = element_rect(f
 fig_dir <- "figures"
 if(!dir.exists(fig_dir)) dir.create(fig_dir, recursive = TRUE)
 
-autoplot(repeated_cv_result, type="wflow_id")
+# autoplot(repeated_cv_result, type="wflow_id")
   
 wflow_ids <- repeated_cv_result$wflow_id
 wflow_ids_wo_linear <- wflow_ids[!endsWith(wflow_ids, "_linear")]
@@ -479,10 +479,10 @@ results_to_keep <- rbind(one_std_err_results, best_results)
 repeated_cv_result_dt <- repeated_cv_result |> rank_results(rank_metric = main_metric) |> semi_join(results_to_keep)
 repeated_cv_result_dt[, rank := factor(rank, levels = sort(unique(rank)))]
 
-ggplot(repeated_cv_result_dt, aes(x = rank, y = mean, color = wflow_id)) +
-  geom_point() +
-  geom_errorbar(aes(ymin = mean - std_err, ymax = mean + std_err), width = .5) +
-  facet_wrap(~.metric, scales = 'free')
+# ggplot(repeated_cv_result_dt, aes(x = rank, y = mean, color = wflow_id)) +
+#   geom_point() +
+#   geom_errorbar(aes(ymin = mean - std_err, ymax = mean + std_err), width = .5) +
+#   facet_wrap(~.metric, scales = 'free')
 
 final_fits <- sapply(names(final_models), function(this_wflow_id)
   repeated_cv_result |>
@@ -1002,7 +1002,7 @@ score_summary <- ggplot(score_summary_metrics[!is.na(bootstrap_ind)],
     labs(x = NULL, y = NULL) +
     tidytext::scale_x_reordered() +
     theme(axis.text.x = element_text(angle = 45, hjust = 1), legend.position = "left")
-ggsave(filename = file.path(fig_dir, "score_summary.pdf"), plot = score_summary, width = 8, height = 6)
+# ggsave(filename = file.path(fig_dir, "score_summary.pdf"), plot = score_summary, width = 8, height = 6)
 
 score_summary_metrics_kiel <- summary_metrics[model %in% interesting_modelmap[!interesting_modelmap %in% established_models] & 
                                                 metric_name %in% interesting_metricmap &
@@ -1041,7 +1041,7 @@ score_summary_kiel <- ggplot(score_summary_metrics_kiel[!is.na(bootstrap_ind)],
     labs(x = NULL, y = NULL) + 
     tidytext::scale_x_reordered() + 
     theme(axis.text.x = element_text(angle = 45, hjust = 1), legend.position = "none")
-ggsave(filename = file.path(fig_dir, "score_summary_kiel.pdf"), plot = score_summary_kiel, width = 4, height = 4)
+# ggsave(filename = file.path(fig_dir, "score_summary_kiel.pdf"), plot = score_summary_kiel, width = 4, height = 4)
 ```
 
 ### Prediction and Error Plots
@@ -1144,11 +1144,11 @@ pred_obs <-
 #         guides(color = guide_legend(byrow = T)) +
 #         scale_color_manual(values = bmi_colors) +
 #         theme(legend.position = "top") + labs(color = "BMI Category"))
-print(pred_obs + 
-        geom_point(alpha = 1, size = .4) +
-        guides(color = guide_legend(byrow = T)) +
-        scale_color_brewer(palette = "RdYlBu", direction = -1) +
-        theme(legend.position = "top") + labs(color = "BMI Category"))
+# print(pred_obs + 
+#         geom_point(alpha = 1, size = .4) +
+#         guides(color = guide_legend(byrow = T)) +
+#         scale_color_brewer(palette = "RdYlBu", direction = -1) +
+#         theme(legend.position = "top") + labs(color = "BMI Category"))
 # print(pred_obs + 
 #         geom_point(alpha = 1, size = .5) +
 #         guides(color = guide_legend(byrow = T)) +
@@ -1165,11 +1165,12 @@ pred_plots <-
     models = list(
       c(interesting_modelmap[startsWith(interesting_modelmap, "Lasso")],
         established_models
-    ), 
+    ),
       c("Lasso Enable")),
     fig.sizes = list(c(15, 15), 
                      c(4, 4)),
-    FUN = function(sites, models, fig.sizes) {
+    save_plot = list(TRUE, FALSE),
+    FUN = function(sites, models, fig.sizes, save_plot) {
       fig_suffix <- paste0(paste(sites, collapse="-"), "_", paste(models, collapse="-"), ".pdf")
       pred_obs <-
         plot_preds(
@@ -1182,7 +1183,8 @@ pred_plots <-
           facet_row = ifelse(length(models) > 1, "model", ""),
           focus_observed = TRUE
         )
-      print(pred_obs)
+      # print(pred_obs)
+      if (save_plot)
       ggsave(filename = file.path(fig_dir, paste0("pred_obs_", fig_suffix)), plot = pred_obs, width = fig.sizes[1], height = fig.sizes[2])
       ba <-
         plot_bland_altman(
@@ -1194,9 +1196,9 @@ pred_plots <-
           facet_col = ifelse(length(sites) > 1, "Site", ""),
           facet_row = ifelse(length(models) > 1, "model", ""),
         )
-      print(ba)
-      ggsave(filename = file.path(fig_dir, paste0("ba_", fig_suffix)), plot = ba, width = fig.sizes[1], height = fig.sizes[2])
-      ggsave(filename = file.path(fig_dir, paste0("ba_pred_obs_", fig_suffix)), plot = (pred_obs + ba), width = fig.sizes[1]*2 - 1, height = fig.sizes[2])
+      # print(ba)
+      # ggsave(filename = file.path(fig_dir, paste0("ba_", fig_suffix)), plot = ba, width = fig.sizes[1], height = fig.sizes[2])
+      # ggsave(filename = file.path(fig_dir, paste0("ba_pred_obs_", fig_suffix)), plot = (pred_obs + ba), width = fig.sizes[1]*2 - 1, height = fig.sizes[2])
       list(
         pred_obs = pred_obs,
         ba = ba
@@ -1254,10 +1256,10 @@ ggsave(filename = file.path(fig_dir, "selected_features_expl_variance.pdf"), plo
 ```{r, plots-vs}
 scatter <- ggscatterhist(all_data, x = "Mean Outdoor Temperature", y = "RMR", color = "Site", xlab = "Mean Daily Temperature in °C", ylab = "RMR in kJ", alpha=.5, print = FALSE, legend = "bottom")
 scatter$sp <- scatter$sp + geom_smooth(method = 'lm', se = FALSE, aes(color = Site)) + stat_cor(size = 3, aes(color = Site))
-pdf(file.path(fig_dir, "scatter_temp_rmr.pdf"), width = 7, height = 7)
-scatter
-dev.off()
-print(scatter)
+# pdf(file.path(fig_dir, "scatter_temp_rmr.pdf"), width = 7, height = 7)
+# scatter
+# dev.off()
+# print(scatter)
 scatter_kiel_scores <- ggpubr:::.insert_xaxis_grob(scatter$sp, scatter$xplot, grid::unit(1/5, 
                                                 "null"), position = "top")
 scatter_kiel_scores <- ggpubr:::.insert_yaxis_grob(scatter_kiel_scores, scatter$yplot, grid::unit(1/5, 
@@ -1281,14 +1283,14 @@ write.table(round(cor_mat[order(cor_mat[, "RMR"], decreasing = TRUE), "RMR", dro
 microbiome_cor_mat <- round(cor_mat[column_groups[group %in% c("microbiome family", "microbiome diversity"), column], "RMR", drop = FALSE], 3)
 microbiome_cor_mat <- microbiome_cor_mat[order(microbiome_cor_mat[, "RMR"], decreasing = TRUE), , drop=FALSE]
 colnames(microbiome_cor_mat)[colnames(microbiome_cor_mat) == "RMR"] <- "RMR (kJ/day)"
-write.table(microbiome_cor_mat, quote = FALSE, sep = ',')
+write.table(microbiome_cor_mat, quote = FALSE, sep = ',', file = "micro_cor.csv")
 
 non_microbiome_cor_mat <- round(cor_mat[!rownames(cor_mat) %in% rownames(microbiome_cor_mat), "RMR", drop = FALSE], 3)
 non_microbiome_cor_mat <- non_microbiome_cor_mat[order(non_microbiome_cor_mat[, "RMR"], decreasing = TRUE), , drop=FALSE]
 colnames(non_microbiome_cor_mat)[colnames(non_microbiome_cor_mat) == "RMR"] <- "RMR (kJ/day)"
-write.table(non_microbiome_cor_mat, quote = FALSE, sep = ',')
+write.table(non_microbiome_cor_mat, quote = FALSE, sep = ',', file = "non_micro_cor.csv")
 
-write.table(cor_mat, quote = FALSE, sep = ',')
+write.table(cor_mat, quote = FALSE, sep = ',', file = "all_cor.csv")
 
 dist_obj = as.dist(1 - cor_mat)
 clust <- hclust(dist_obj, method = "complete") # do not use "ward.D2" here, because we use correlation distance
