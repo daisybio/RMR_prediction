@@ -901,12 +901,13 @@ pred_dt[model %in% established_models, `Model Type` := "Established"]
 ```{r, cv-summary}
 model_type_colors <- c(Established = "#66C2A5",
                        Lasso = "#FC8D62",
-                       Nnet = "#8DA0CB", 
+                       NN = "#8DA0CB", 
                        RF = "#E78AC3",
                        Linear = "#A6D854")
 
 repeated_cv_result_dt[, c("prepping", "Model Type") := data.table::tstrsplit(as.character(wflow_id2), "_", fixed = TRUE)]
 repeated_cv_result_dt[, `Model Type` := tools::toTitleCase(`Model Type`)]
+repeated_cv_result_dt[`Model Type` == "Nnet", `Model Type` := "NN"]
 repeated_cv_result_dt[, `Accessible Predictors` := grepl(pattern = "Access", x = prepping)]
 
 ggplot(repeated_cv_result_dt[!wflow_id2 %in% names(new_models) & .metric == main_metric], aes(x = reorder(wflow_id, mean), y = mean, color = `Model Type`, shape = `Accessible Predictors`)) +
@@ -986,12 +987,14 @@ pairwise_tests_summary[score_summary_metrics[!is.na(bootstrap_ind),
 pairwise_tests_summary[, y.position := y.position + y.position * (.05 * (seq.int(.N) - 1)), by = .(Site, metric_name)]
 pairwise_tests_summary[metric_name == "RMSE", y.position := y.position - 200]
 
-
+conf_level = .95
+lower_perc <- (1 - conf_level)/2
 score_summary <- ggplot(score_summary_metrics[!is.na(bootstrap_ind)],
        aes(x = tidytext::reorder_within(model, metric, Site), y = metric)) +
     geom_col(data = score_summary_metrics[is.na(bootstrap_ind)], aes(fill = `Model Type`), color = 'white', alpha = 0.7) +
-    stat_summary(fun.data = function(x) list(y = mean(x), ymin = quantile(x, 0 + ((1 - .9)/2)), ymax = quantile(x, 1 - ((1 - .9)/2))), 
-                 geom = "pointrange", fatten = 2) +
+    # stat_summary(fun.data = function(x) list(y = mean(x), ymin = quantile(x, 0 + lower_perc), ymax = quantile(x, 1 - lower_perc)),
+    #              geom = "pointrange", fatten = 2) +
+    geom_violin(fill = NA, width = .9) +
     stat_pvalue_manual(pairwise_tests_summary, 
                        label = "p.signif", tip.length = 0, size = 2) +
     scale_fill_manual(values = model_type_colors) +
@@ -1031,8 +1034,9 @@ pairwise_tests_summary_kiel[, y.position := y.position + y.position * (.05 * (se
 score_summary_kiel <- ggplot(score_summary_metrics_kiel[!is.na(bootstrap_ind)],
     aes(x = tidytext::reorder_within(model, metric, Site), y = metric)) +
     geom_col(data = score_summary_metrics_kiel[is.na(bootstrap_ind)], aes(fill = `Model Type`), color = 'white', alpha = 0.7) +
-    stat_summary(fun.data = function(x) list(y = mean(x), ymin = quantile(x, 0 + ((1 - .9)/2)), ymax = quantile(x, 1 - ((1 - .9)/2))), 
-                 geom = "pointrange", fatten = 2) +
+    # stat_summary(fun.data = function(x) list(y = mean(x), ymin = quantile(x, 0 + lower_perc), ymax = quantile(x, 1 - lower_perc)),
+    #              geom = "pointrange", fatten = 2) +
+    geom_violin(fill = NA, width = .9) +
     stat_pvalue_manual(pairwise_tests_summary_kiel, label = "p.signif", tip.length = 0, size = 2) +
     scale_fill_manual(values = model_type_colors) +
     # add the value as text into the bar, ninety degrees rotated
