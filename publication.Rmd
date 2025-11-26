@@ -323,6 +323,7 @@ lasso_model <-
   linear_reg(penalty = tune(), mixture = 1) |> 
   set_engine("glmnet", standardize = TRUE)
 
+library(ranger)
 # random forest
 rf_model <-
   rand_forest(trees = tune(), min_n = tune(), mtry = tune()) |> 

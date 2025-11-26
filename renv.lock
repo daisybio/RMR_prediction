@@ -1690,6 +1690,19 @@
       ],
       "Hash": "c6e207b874494a7ac4d52f02dcd7d3af"
     },
+    "ranger": {
+      "Package": "ranger",
+      "Version": "0.16.0",
+      "Source": "Repository",
+      "Repository": "CRAN",
+      "Requirements": [
+        "Matrix",
+        "R",
+        "Rcpp",
+        "RcppEigen"
+      ],
+      "Hash": "d5ca3a8d00f088042ea3b638534e0f3d"
+    },
     "rappdirs": {
       "Package": "rappdirs",
       "Version": "0.3.3",
