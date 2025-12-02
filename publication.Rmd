@@ -7,6 +7,13 @@ output: html_document
 
 # Load Data
 
+## Download from zenodo
+
+```{bash}
+wget -nc -nv -O data.zip https://zenodo.org/api/records/17735477/files-archive
+unzip -o data.zip -d data
+```
+
 ## Load Enable Data
 
 ```{r, load-enable}
@@ -61,13 +68,13 @@ if(all(enable_data[, `Probanden-ID` == Label]))
 
 ```{r, load-micro}
 # load microbiome mapping
-microbiome_mapping <- data.table::setDT(read_xlsx(file.path(data_folder, "mapping_file 1.xlsx")))
+microbiome_mapping <- data.table::setDT(read_xlsx(file.path(data_folder, "enabl_microbiota_mapping_file 1.xlsx")))
 microbiome_mapping[, sample_clean := data.table::tstrsplit(".", x = `#SampleID`, fixed = TRUE, keep = 2)]
 # check uniqueness
 stopifnot(!any(microbiome_mapping[, duplicated(sample_clean)]))
 
 # load microbiome data
-microbiome_data <- fread(file.path(data_folder, "tax.summary.all 1.tab"))
+microbiome_data <- fread(file.path(data_folder, "enable_microbiota_tax.summary.all 1.tab"))
 stripped_names <- unlist(data.table::tstrsplit(".", x = names(microbiome_data), fixed = TRUE, keep = 2))
 # check uniqueness
 stopifnot(!any(duplicated(stripped_names)))
@@ -92,7 +99,7 @@ invisible(enable_data[, Label_group:=substr(Label, 1, 1)])
 # diversity columns
 diversity_columns <- c("Shannon.effective", "Simpson.effective")
 # load diversity data
-diversity_data <- fread('data/Final table.tab', stringsAsFactors=TRUE) |> data.table::setnames(old='V1', new="Label") |> select(Label, all_of(diversity_columns))
+diversity_data <- fread('data/enable_microbiota_Final table.tab', stringsAsFactors=TRUE) |> data.table::setnames(old='V1', new="Label") |> select(Label, all_of(diversity_columns))
 
 invisible(enable_data[diversity_data, on=.(Label), (c(diversity_columns)) := mget(diversity_columns)])
 ```
@@ -159,7 +166,7 @@ taxa_group <-
                           fixed = TRUE)[[1]]]
 # match the columns to certain groups
 column_groups <- rbind(data.table::data.table(column = 'Label_group', group = "General information"),
-                       fread(file.path(data_folder, 'column_groups.tsv')),
+                       fread(file.path(data_folder, 'enable_column_groups.tsv')),
                        data.table::data.table(column = taxa_names, group = paste("microbiome", taxa_group)),
                        data.table::data.table(column = diversity_columns, group = paste("microbiome diversity")))
 column_groups[, group:=as.factor(group)]
@@ -193,7 +200,7 @@ stopifnot(all(c(response_variable, grouping_column, other_labelling_columns, tax
 ## Load Kiel Data
 
 ```{r, load-kiel}
-kiel_data <- data.table::setDT(read_xlsx(file.path(data_folder, "REE Datenbank TUM_Januar 2025tf QM.xlsx")))
+kiel_data <- data.table::setDT(read_xlsx(file.path(data_folder, "KIEL_REE Datenbank TUM_Januar 2025tf QM.xlsx")))
 # make new SampleID from ID and zusätzliche Codierung
 kiel_data[, Site := "Kiel"]
 kiel_data[, Label := paste0(ID, "_", `zusätzliche Codierung`)]
