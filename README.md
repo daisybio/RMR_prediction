@@ -8,7 +8,7 @@ All analyses are done in [publication.Rmd](./publication.Rmd) using `R version 4
 To ensure maximum reproducibility of the models and figures from the publication, the project environment [`renv`](https://rstudio.github.io/renv/) is used.
 All packages should be installed after running `renv::restore()`.
 
-The data folder is deposited on [zenodo](https://zenodo.org/) and has to be downloaded before running the analysis.
+The data folder is deposited on [zenodo](https://zenodo.org/records/17735477) and has to be downloaded before running the analysis.
 
 ## Overview
 
