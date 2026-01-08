@@ -1,6 +1,6 @@
 # Predicting Resting Metabolic Rate in healthy adults: A Comparative Analysis Using the enable cohort
 
-This is the GitHub repository accompanying the manuscript _Predicting Resting Metabolic Rate in healthy adults: A Comparative Analysis Using the enable cohort_.
+This is the GitHub repository accompanying the manuscript [_Predicting Resting Metabolic Rate in healthy adults: A Comparative Analysis Using the enable cohort_ doi.org/10.1152/ajpendo.00375.2025](https://doi.org/10.1152/ajpendo.00375.2025).
 
 ## Reproduce Analysis
 
